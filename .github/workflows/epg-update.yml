@@ -1,4 +1,4 @@
-Name: Grab EPG
+name: Grab EPG
 
 on:
   schedule:
