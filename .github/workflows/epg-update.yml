@@ -1,0 +1,47 @@
+name: Grab EPG
+
+on:
+  schedule:
+    # Runs every day at 06:00 UTC (change as desired)
+    - cron: '0 6 * * *'
+  workflow_dispatch:  # Allows manual runs from the Actions tab
+
+permissions:
+  contents: write  # Required to commit the generated file
+
+jobs:
+  grab:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run grab
+        # Customize this command!
+        # Examples:
+        #   --sites=example.com
+        #   --sites=site1.com,site2.com
+        #   --channels=path/to/custom.channels.xml
+        #   --maxConnections=5
+        #   --days=7
+        #   NODE_OPTIONS=--max-old-space-size=4096 (for large sites)
+        run: |
+          npm run grab --- --sites=cgates.lt --output=guide.xml --gzip
+
+      - name: Commit and push guide.xml.gz
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add guide.xml.gz
+          # Only commit if the file changed
+          git diff --staged --quiet || git commit -m "Update guide.xml.gz [skip ci]"
+          git push
