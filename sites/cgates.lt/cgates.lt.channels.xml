@@ -32,7 +32,7 @@
   <channel site="cgates.lt" site_id="rtv-international" lang="lt" xmltv_id="rtv-international">RTV International</channel>
   <channel site="cgates.lt" site_id="siauliu-televizija" lang="lt" xmltv_id="SiauliuTV.lt@SD">Etaplius TV</channel>
   <channel site="cgates.lt" site_id="sony-channel-hd" lang="en" xmltv_id="Duo3.ee@SD">Duo 3</channel>
-  <channel site="cgates.lt" site_id="sport-1-hd" lang="lt" xmltv_id="Sport1.lt@SD">Sport 1</channel>
+  <channel site="cgates.lt" site_id="sport-1-hd" lang="lt" xmltv_id="Go3Sport1.ee@SD">Go3 Sport 1</channel>
   <channel site="cgates.lt" site_id="star-cinema" lang="uk" xmltv_id="StarCinema.ua@SD">Star Cinema</channel>
   <channel site="cgates.lt" site_id="star-family" lang="ru" xmltv_id="StarFamily.ru@SD">Star Family</channel>
   <channel site="cgates.lt" site_id="super-plius-hd" lang="lt" xmltv_id="super-plius-hd">Super+</channel>
@@ -41,7 +41,7 @@
   <channel site="cgates.lt" site_id="tv1-hd" lang="lt" xmltv_id="TV1.lt@SD">TV1</channel>
   <channel site="cgates.lt" site_id="tv3-hd" lang="lt" xmltv_id="TV3.lt@SD">TV3</channel>
   <channel site="cgates.lt" site_id="tv3-plus-hd" lang="lt" xmltv_id="TV3Plus.lv@SD">TV3 Plus</channel>
-  <channel site="cgates.lt" site_id="tv3-sport-open-hd" lang="en" xmltv_id="Go3Sport1.ee@SD">Go3 Sport 1</channel>
+  <channel site="cgates.lt" site_id="tv3-sport-open-hd" lang="en" xmltv_id="Go3SportOpen.ee@SD">Go3 Sport Open</channel>
   <channel site="cgates.lt" site_id="tv6-hd" lang="lt" xmltv_id="TV6.lt@SD">TV6</channel>
   <channel site="cgates.lt" site_id="tv7" lang="lt" xmltv_id="tv7">TV7</channel>
   <channel site="cgates.lt" site_id="tv8-hd" lang="lt" xmltv_id="TV8.lt@SD">TV8</channel>
