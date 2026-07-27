@@ -2,22 +2,21 @@ name: Grab EPG
 
 on:
   schedule:
-    # Runs every day at 03:00 UTC – change as needed
-    - cron: '0 3 * * *'
-  workflow_dispatch:   # Allows manual runs from the Actions tab
+    - cron: '0 3 * * *'   # every day at 03:00 UTC
+  workflow_dispatch:
 
 permissions:
-  contents: write      # Required to commit back to the repo
+  contents: write
 
 jobs:
   grab:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '22'
           cache: 'npm'
@@ -27,26 +26,15 @@ jobs:
 
       - name: Run grab
         run: |
-          npm run grab --- --cgates.lt --gzip --maxConnections=5
-          
-          # === EDIT THIS LINE ==  npm run grab --- --sites=example.com --output=guide.xml --gzip
-          # Examples:
-          # npm run grab --- --sites=sky.com,virginmedia.com --gzip --maxConnections=5
-          # npm run grab --- --channels=my.channels.xml --output=guide.xml --gzip
-          # For very large grabs add:
-          # NODE_OPTIONS=--max-old-space-size=8192 npm run grab --- ...
+          npm run grab --- --sites=cgates.lt --gzip --maxConnections=5
 
       - name: Commit and push guide.xml.gz
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Only commit if the file changed
           if [ -f guide.xml.gz ]; then
             git add guide.xml.gz
-            # Optional: also keep the uncompressed file
-            # git add guide.xml
-
             if git diff --staged --quiet; then
               echo "No changes to commit"
             else
