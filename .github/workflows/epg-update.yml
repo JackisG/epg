@@ -37,14 +37,6 @@ jobs:
             --gzip=guide.xml.gz \
             --maxConnections=5
 
-      - name: Show generated files
-        if: always()
-        run: |
-          echo "=== Files in workspace ==="
-          ls -la
-          echo "=== Looking for guide files ==="
-          ls -la guide.xml* 2>/dev/null || echo "No guide.xml* found"
-
       - name: Commit and push guide.xml.gz
         run: |
           git config user.name "github-actions[bot]"
@@ -56,7 +48,7 @@ jobs:
             exit 1
           fi
 
-          git add guide.xml.gz
+          git add -f guide.xml.gz
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
