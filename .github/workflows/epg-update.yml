@@ -2,21 +2,22 @@ name: Grab EPG
 
 on:
   schedule:
-    - cron: '0 3 * * *'   # every day at 03:00 UTC
-  workflow_dispatch:
+    # Runs every day at 03:00 UTC
+    - cron: '0 3 * * *'
+  workflow_dispatch:   # Allows manual runs from the Actions tab
 
 permissions:
-  contents: write
+  contents: write      # Required to commit back to the repo
 
 jobs:
   grab:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: 'npm'
@@ -26,7 +27,7 @@ jobs:
 
       - name: Run grab
         run: |
-          npm run grab --- --sites=cgates.lt --gzip --maxConnections=5
+          npm run grab --- --sites=cgates.lt --output=guide.xml --gzip --maxConnections=5
 
       - name: Commit and push guide.xml.gz
         run: |
@@ -35,6 +36,7 @@ jobs:
 
           if [ -f guide.xml.gz ]; then
             git add guide.xml.gz
+
             if git diff --staged --quiet; then
               echo "No changes to commit"
             else
