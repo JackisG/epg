@@ -2,8 +2,8 @@ name: Grab EPG
 
 on:
   schedule:
-    - cron: '0 3 * * *'   # every day at 03:00 UTC
-  workflow_dispatch:      # manual run from Actions tab
+    - cron: '0 3 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -22,25 +22,44 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci || npm install
+          else
+            npm install
+          fi
 
       - name: Run grab
-        run: npm run grab --- --sites=cgates.lt --gzip --maxConnections=5
+        run: |
+          npm run grab --- \
+            --sites=cgates.lt \
+            --output=guide.xml \
+            --gzip=guide.xml.gz \
+            --maxConnections=5
+
+      - name: Show generated files
+        if: always()
+        run: |
+          echo "=== Files in workspace ==="
+          ls -la
+          echo "=== Looking for guide files ==="
+          ls -la guide.xml* 2>/dev/null || echo "No guide.xml* found"
 
       - name: Commit and push guide.xml.gz
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          if [ -f guide.xml.gz ]; then
-            git add guide.xml.gz
-            if git diff --staged --quiet; then
-              echo "No changes to commit"
-            else
-              git commit -m "Update guide.xml.gz $(date -u +%Y-%m-%d)"
-              git push
-            fi
-          else
-            echo "guide.xml.gz not found – grab may have failed"
+          if [ ! -f guide.xml.gz ]; then
+            echo "ERROR: guide.xml.gz was not created"
+            ls -la
             exit 1
+          fi
+
+          git add guide.xml.gz
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update guide.xml.gz $(date -u +%Y-%m-%d)"
+            git push
           fi
