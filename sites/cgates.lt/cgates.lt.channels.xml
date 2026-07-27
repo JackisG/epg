@@ -6,7 +6,7 @@
   <channel site="cgates.lt" site_id="balticum-platinum-hd" lang="uk" xmltv_id="">Balticum Platinum</channel>
   <channel site="cgates.lt" site_id="balticum-tv" lang="lt" xmltv_id="BalticumTV.lt@SD">Balticum TV</channel>
   <channel site="cgates.lt" site_id="blue-hustler" lang="en" xmltv_id="BlueHustler.nl@SD">Blue Hustler</channel>
-  <channel site="cgates.lt" site_id="btv-hd" lang="lt" xmltv_id="BTV.lt@HD">BTV</channel>
+  <channel site="cgates.lt" site_id="btv-hd" lang="lt" xmltv_id="BTV.lt@SD">BTV</channel>
   <channel site="cgates.lt" site_id="delfi-tv-hd" lang="lt" xmltv_id="DelfiTV.lt@SD">Delfi TV</channel>
   <channel site="cgates.lt" site_id="deutsche-welle" lang="lt" xmltv_id="">Deutsche Welle</channel>
   <channel site="cgates.lt" site_id="discovery-channel-hd" lang="en" xmltv_id="DiscoveryChannel.lv@SD">Discovery Channel</channel>
@@ -23,7 +23,7 @@
   <channel site="cgates.lt" site_id="info-tv-hd" lang="lt" xmltv_id="InfoTV.lt@SD">Info TV</channel>
   <channel site="cgates.lt" site_id="kidzone-tv" lang="en" xmltv_id="KidZoneMax.ee@SD">Kidzone Max</channel>
   <channel site="cgates.lt" site_id="lietuvos-ryto-tv-hd" lang="lt" xmltv_id="LietuvosRytasTV.lt@SD">Lietuvos ryto TV</channel>
-  <channel site="cgates.lt" site_id="lnk-hd" lang="lt" xmltv_id="LNK.lt@HD">LNK</channel>
+  <channel site="cgates.lt" site_id="lnk-hd" lang="lt" xmltv_id="LNK.lt@SD">LNK</channel>
   <channel site="cgates.lt" site_id="lrt-kultura-hd" lang="lt" xmltv_id="LRTPlius.lt@SD">LRT Plius</channel>
   <channel site="cgates.lt" site_id="lrt-televizija-hd" lang="lt" xmltv_id="LRTTV.lt@SD">LRT Televizija</channel>
   <channel site="cgates.lt" site_id="marijampoles-tv" lang="lt" xmltv_id="MarijampolesTV.lt@SD">Marijampolės TV</channel>
