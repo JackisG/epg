@@ -2,12 +2,12 @@ name: Grab EPG
 
 on:
   schedule:
-    - cron: '0 6 * * *'
-  workflow_dispatch:
+    # Runs every day at 03:00 UTC – change as needed
+    - cron: '0 3 * * *'
+  workflow_dispatch:   # Allows manual runs from the Actions tab
 
 permissions:
-  contents: write
-  actions: write
+  contents: write      # Required to commit back to the repo
 
 jobs:
   grab:
@@ -27,18 +27,33 @@ jobs:
 
       - name: Run grab
         run: |
-          npm run grab --- --sites=cgates.lt --output=guide.xml --gzip
+          npm run grab --- --cgates.lt --gzip --maxConnections=5
+          
+          # === EDIT THIS LINE ==  npm run grab --- --sites=example.com --output=guide.xml --gzip
+          # Examples:
+          # npm run grab --- --sites=sky.com,virginmedia.com --gzip --maxConnections=5
+          # npm run grab --- --channels=my.channels.xml --output=guide.xml --gzip
+          # For very large grabs add:
+          # NODE_OPTIONS=--max-old-space-size=8192 npm run grab --- ...
 
       - name: Commit and push guide.xml.gz
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add guide.xml.gz
-          git diff --staged --quiet || git commit -m "Update guide.xml.gz [skip ci]"
-          git push
 
-      - name: Native Keepalive
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh api -X PUT repos/${{ github.repository }}/actions/workflows/epg-update.yml/enable || true
+          # Only commit if the file changed
+          if [ -f guide.xml.gz ]; then
+            git add guide.xml.gz
+            # Optional: also keep the uncompressed file
+            # git add guide.xml
+
+            if git diff --staged --quiet; then
+              echo "No changes to commit"
+            else
+              git commit -m "Update guide.xml.gz $(date -u +%Y-%m-%d)"
+              git push
+            fi
+          else
+            echo "guide.xml.gz not found – grab may have failed"
+            exit 1
+          fi
