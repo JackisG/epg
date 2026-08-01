@@ -32,7 +32,7 @@
   <channel site="cgates.lt" site_id="rtv-international" lang="lt" xmltv_id="">RTV International</channel>
   <channel site="cgates.lt" site_id="siauliu-televizija" lang="lt" xmltv_id="SiauliuTV.lt@SD">Etaplius TV</channel>
   <channel site="cgates.lt" site_id="sony-channel-hd" lang="en" xmltv_id="Duo3.ee@SD">Duo 3</channel>
-  <channel site="cgates.lt" site_id="sport-1-hd" lang="lt" xmltv_id="Sport1Baltic.ua@SD">Sport 1</channel>
+  <channel site="cgates.lt" site_id="sport-1-hd" lang="lt" xmltv_id="Sport1.lt@SD">Sport 1</channel>
   <channel site="cgates.lt" site_id="star-cinema" lang="uk" xmltv_id="StarCinema.ua@SD">Star Cinema</channel>
   <channel site="cgates.lt" site_id="star-family" lang="ru" xmltv_id="StarFamily.ru@SD">Star Family</channel>
   <channel site="cgates.lt" site_id="super-plius-hd" lang="lt" xmltv_id="">Super+</channel>
