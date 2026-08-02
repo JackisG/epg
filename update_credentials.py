@@ -6,29 +6,39 @@ import traceback
 import asyncio
 from github import Github
 
-# ---------- Dynamically add cloudflare-solver to path ----------
-# The repo is cloned into ./cloudflare-solver
-# Try to find the module in possible locations
-solver_paths = [
-    "./cloudflare-solver",
-    "./cloudflare-solver/src",
-    "./cloudflare-solver/cloudflare_solver",
-]
+# ---------- Dynamically locate cloudflare-solver module ----------
+def find_module(base_dir, module_name="cloudflare_solver"):
+    """Recursively search for a module folder containing __init__.py."""
+    for root, dirs, files in os.walk(base_dir):
+        if module_name in dirs:
+            potential_path = os.path.join(root, module_name)
+            if os.path.isdir(potential_path) and os.path.exists(os.path.join(potential_path, "__init__.py")):
+                return os.path.dirname(potential_path)  # parent directory
+        # Also check if a .py file with that name exists
+        for f in files:
+            if f == f"{module_name}.py":
+                return root
+    return None
 
-for path in solver_paths:
-    if os.path.isdir(path):
-        sys.path.insert(0, os.path.abspath(path))
-        print(f"📁 Added to PYTHONPATH: {os.path.abspath(path)}")
-        break
+base_dir = "./cloudflare-solver"
+if not os.path.isdir(base_dir):
+    print(f"❌ Directory {base_dir} not found. Ensure it's cloned.")
+    sys.exit(1)
+
+module_path = find_module(base_dir)
+if module_path:
+    sys.path.insert(0, os.path.abspath(module_path))
+    print(f"📁 Added to PYTHONPATH: {os.path.abspath(module_path)}")
 else:
-    print("❌ Could not find cloudflare-solver directory. Ensure it's cloned.")
+    print("❌ Could not locate cloudflare_solver module. Dumping directory tree:")
+    os.system(f"find {base_dir} -type f -name '*.py' | head -20")
     sys.exit(1)
 
 # Now import
 try:
     from cloudflare_solver import CloudflareSolver, ChallengeType
-except ImportError:
-    print("❌ Failed to import cloudflare_solver. Check the path.")
+except ImportError as e:
+    print("❌ Failed to import cloudflare_solver even after path update.")
     traceback.print_exc()
     sys.exit(1)
 
