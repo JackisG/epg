@@ -5,7 +5,7 @@ import sys
 import traceback
 import asyncio
 from github import Github
-from rebrowser_playwright.async_api import async_playwright  # <-- patched version
+from rebrowser_playwright.async_api import async_playwright  # Patched version
 
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 REPO_NAME = "JackisG/epg"
@@ -21,7 +21,6 @@ async def fetch_new_credentials():
         print("🔗 Navigating to page...")
         await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
 
-        # Wait for the credentials to appear
         try:
             await page.wait_for_selector("#accUser", timeout=30000)
         except Exception:
@@ -74,7 +73,7 @@ def update_m3u_file(username, password):
         message=f"Auto-update credentials: username={username}",
         content="\n".join(new_lines),
         sha=contents.sha,
-        branch="master"
+        branch="master"   # change to "main" if your default branch is main
     )
     print(f"✅ Updated {replaced} URL(s) and pushed to GitHub.")
 
