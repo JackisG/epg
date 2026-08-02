@@ -34,7 +34,6 @@ async def fetch_new_credentials():
     page_html = result.stdout
 
     # The script might print extra logs; try to extract the actual HTML
-    # Look for the <html> tag or DOCTYPE
     html_match = re.search(r'(<!DOCTYPE html>|<html).*?(</html>)', page_html, re.DOTALL | re.IGNORECASE)
     if html_match:
         page_html = html_match.group(0)
