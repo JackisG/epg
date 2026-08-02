@@ -1,3 +1,2 @@
 scrapling[fetchers]
 PyGithub
-playwright
