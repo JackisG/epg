@@ -73,7 +73,7 @@ def update_m3u_file(username, password):
         message=f"Auto-update credentials: username={username}",
         content="\n".join(new_lines),
         sha=contents.sha,
-        branch="master"   # change to "main" if needed
+        branch="master"   # change to "main" if your default branch is main
     )
     print(f"✅ Updated {replaced} URL(s) and pushed to GitHub.")
 
