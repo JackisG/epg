@@ -13,7 +13,7 @@ FILE_PATH = "languages/lit.m3u"
 TARGET_URL = "https://freeiptv2023-d.ottc.xyz/index.php?action=view"
 
 async def fetch_new_credentials():
-    print("🌐 Launching CloudflareSolver (free, latest version) ...")
+    print("🌐 Launching CloudflareSolver (latest version, cloned from GitHub) ...")
     solver = CloudflareSolver(
         challenge_type=ChallengeType.TURNSTILE,
         headless=True,
@@ -71,7 +71,7 @@ def update_m3u_file(username, password):
         message=f"Auto-update credentials: username={username}",
         content="\n".join(new_lines),
         sha=contents.sha,
-        branch="master"
+        branch="master"   # change to "main" if needed
     )
     print(f"✅ Updated {replaced} URL(s) and pushed to GitHub.")
 
