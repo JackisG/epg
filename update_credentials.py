@@ -5,53 +5,23 @@ import sys
 import traceback
 import asyncio
 from github import Github
-from playwright.async_api import async_playwright
+from rebrowser_playwright.async_api import async_playwright  # <-- patched version
 
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 REPO_NAME = "JackisG/epg"
 FILE_PATH = "languages/lit.m3u"
 TARGET_URL = "https://freeiptv2023-d.ottc.xyz/index.php?action=view"
 
-async def apply_stealth(page):
-    """Inject stealth scripts to avoid detection."""
-    await page.add_init_script("""
-        // Overwrite navigator.webdriver
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        // Remove Playwright automation traces
-        delete window.__playwright__binding__;
-        delete window.__pwInitScripts;
-        // Overwrite navigator.plugins
-        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-        // Overwrite navigator.languages
-        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-        // Overwrite navigator.chrome
-        window.chrome = { runtime: {} };
-        // Overwrite navigator.connection
-        Object.defineProperty(navigator, 'connection', { get: () => ({}) });
-        // Overwrite navigator.userAgentData (if exists)
-        if (navigator.userAgentData) {
-            Object.defineProperty(navigator, 'userAgentData', { get: () => ({ brands: [] }) });
-        }
-        // Prevent WebGL fingerprinting (basic)
-        const getParameter = WebGLRenderingContext.prototype.getParameter;
-        WebGLRenderingContext.prototype.getParameter = function(parameter) {
-            if (parameter === 37445) return 'Intel Inc.';
-            if (parameter === 37446) return 'Intel Iris OpenGL Engine';
-            return getParameter(parameter);
-        };
-    """)
-
 async def fetch_new_credentials():
-    print("🌐 Launching browser...")
+    print("🌐 Launching browser (rebrowser-playwright)...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
-        context = await browser.new_context()
-        page = await context.new_page()
-        await apply_stealth(page)   # Apply stealth before navigation
+        page = await browser.new_page()
 
         print("🔗 Navigating to page...")
-        await page.goto(TARGET_URL, wait_until="networkidle", timeout=90000)
+        await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
 
+        # Wait for the credentials to appear
         try:
             await page.wait_for_selector("#accUser", timeout=30000)
         except Exception:
@@ -104,7 +74,7 @@ def update_m3u_file(username, password):
         message=f"Auto-update credentials: username={username}",
         content="\n".join(new_lines),
         sha=contents.sha,
-        branch="master"   # change to "main" if needed
+        branch="master"
     )
     print(f"✅ Updated {replaced} URL(s) and pushed to GitHub.")
 
