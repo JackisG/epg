@@ -5,7 +5,7 @@ import sys
 import traceback
 import asyncio
 from github import Github
-from rebrowser_playwright.async_api import async_playwright  # Patched version
+from rebrowser_playwright.async_api import async_playwright
 
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 REPO_NAME = "JackisG/epg"
@@ -73,7 +73,7 @@ def update_m3u_file(username, password):
         message=f"Auto-update credentials: username={username}",
         content="\n".join(new_lines),
         sha=contents.sha,
-        branch="master"   # change to "main" if your default branch is main
+        branch="master"   # change to "main" if needed
     )
     print(f"✅ Updated {replaced} URL(s) and pushed to GitHub.")
 
