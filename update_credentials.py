@@ -6,7 +6,7 @@ import traceback
 import asyncio
 from github import Github
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
+from playwright_stealth import stealth  # Correct import
 
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 REPO_NAME = "JackisG/epg"
@@ -19,7 +19,7 @@ async def fetch_new_credentials():
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
         context = await browser.new_context()
         page = await context.new_page()
-        await stealth_async(page)
+        await stealth(page)  # Apply stealth
 
         print("🔗 Navigating to page...")
         await page.goto(TARGET_URL, wait_until="networkidle", timeout=90000)
