@@ -3,38 +3,44 @@ import os
 import re
 import sys
 import traceback
+import asyncio
 from github import Github
-from scrapling.fetchers import DynamicFetcher
+from playwright.async_api import async_playwright
+from playwright_stealth import stealth_async
 
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 REPO_NAME = "JackisG/epg"
 FILE_PATH = "languages/lit.m3u"
 TARGET_URL = "https://freeiptv2023-d.ottc.xyz/index.php?action=view"
 
-def fetch_new_credentials():
-    print("🌐 Fetching page with DynamicFetcher...")
-    # DynamicFetcher uses Playwright directly – no header generator issues
-    page = DynamicFetcher.fetch(
-        TARGET_URL,
-        headless=True,
-        network_idle=True,
-        timeout=90000  # milliseconds
-    )
-    if page.status != 200:
-        raise Exception(f"Page status {page.status}")
+async def fetch_new_credentials():
+    print("🌐 Launching browser...")
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+        context = await browser.new_context()
+        page = await context.new_page()
+        await stealth_async(page)
 
-    username = page.css("#accUser::attr(value)").get()
-    password = page.css("#accPass::attr(value)").get()
-    m3u_link = page.css("#m3uLink::attr(value)").get()
+        print("🔗 Navigating to page...")
+        await page.goto(TARGET_URL, wait_until="networkidle", timeout=90000)
 
-    print(f"👤 Username: {username}")
-    print(f"🔑 Password: {password}")
+        try:
+            await page.wait_for_selector("#accUser", timeout=30000)
+        except Exception:
+            content = await page.content()
+            print("⚠️ Page content (first 1000 chars):")
+            print(content[:1000])
+            raise Exception("Could not find #accUser – page may be blocked.")
 
-    if not (username and password):
-        print("⚠️ Could not extract credentials. Page sample:")
-        print(page.html[:500])
-        raise Exception("Credentials not found – check selectors.")
-    return username, password
+        username = await page.get_attribute("#accUser", "value")
+        password = await page.get_attribute("#accPass", "value")
+        print(f"👤 Username: {username}")
+        print(f"🔑 Password: {password}")
+
+        await browser.close()
+        if not (username and password):
+            raise Exception("Credentials not found.")
+        return username, password
 
 def update_m3u_file(username, password):
     print("📂 Connecting to GitHub...")
@@ -76,7 +82,7 @@ def update_m3u_file(username, password):
 
 def main():
     try:
-        user, pwd = fetch_new_credentials()
+        user, pwd = asyncio.run(fetch_new_credentials())
         update_m3u_file(user, pwd)
         print("🎉 All done!")
     except Exception as e:
