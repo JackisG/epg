@@ -1,11 +1,38 @@
 #!/usr/bin/env python3
 import os
-import re
 import sys
+import re
 import traceback
 import asyncio
 from github import Github
-from cloudflare_solver import CloudflareSolver, ChallengeType
+
+# ---------- Dynamically add cloudflare-solver to path ----------
+# The repo is cloned into ./cloudflare-solver
+# Try to find the module in possible locations
+solver_paths = [
+    "./cloudflare-solver",
+    "./cloudflare-solver/src",
+    "./cloudflare-solver/cloudflare_solver",
+]
+
+for path in solver_paths:
+    if os.path.isdir(path):
+        sys.path.insert(0, os.path.abspath(path))
+        print(f"📁 Added to PYTHONPATH: {os.path.abspath(path)}")
+        break
+else:
+    print("❌ Could not find cloudflare-solver directory. Ensure it's cloned.")
+    sys.exit(1)
+
+# Now import
+try:
+    from cloudflare_solver import CloudflareSolver, ChallengeType
+except ImportError:
+    print("❌ Failed to import cloudflare_solver. Check the path.")
+    traceback.print_exc()
+    sys.exit(1)
+
+# --------------------------------------------------------------
 
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 REPO_NAME = "JackisG/epg"
@@ -13,7 +40,7 @@ FILE_PATH = "languages/lit.m3u"
 TARGET_URL = "https://freeiptv2023-d.ottc.xyz/index.php?action=view"
 
 async def fetch_new_credentials():
-    print("🌐 Launching CloudflareSolver (latest version, cloned from GitHub) ...")
+    print("🌐 Launching CloudflareSolver (latest version from GitHub) ...")
     solver = CloudflareSolver(
         challenge_type=ChallengeType.TURNSTILE,
         headless=True,
