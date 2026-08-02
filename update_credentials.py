@@ -18,22 +18,19 @@ def fetch_new_credentials():
         solve_cloudflare=True,
         headless=True,
         network_idle=True,
-        timeout=90               # Give it extra time
+        timeout=90
     )
     if page.status != 200:
         raise Exception(f"Page status {page.status}")
 
-    # Wait for the credentials fields to be present (implicit wait inside selector)
     username = page.css("#accUser::attr(value)").get()
     password = page.css("#accPass::attr(value)").get()
     m3u_link = page.css("#m3uLink::attr(value)").get()
 
     print(f"👤 Username: {username}")
     print(f"🔑 Password: {password}")
-    # print(f"🔗 M3U link: {m3u_link}")   # optional
 
     if not (username and password):
-        # Dump a snippet of the page to debug
         print("⚠️ Could not extract credentials. Page sample:")
         print(page.html[:500])
         raise Exception("Credentials not found – check selectors.")
@@ -73,7 +70,7 @@ def update_m3u_file(username, password):
         message=f"Auto-update credentials: username={username}",
         content="\n".join(new_lines),
         sha=contents.sha,
-        branch="master"   # change to "main" if needed
+        branch="master"   # change to "main" if your default branch is main
     )
     print(f"✅ Updated {replaced} URL(s) and pushed to GitHub.")
 
