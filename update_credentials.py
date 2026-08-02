@@ -5,7 +5,7 @@ import sys
 import traceback
 import asyncio
 from github import Github
-from rebrowser_playwright.async_api import async_playwright
+from cloudflare_solver import CloudflareSolver, ChallengeType
 
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 REPO_NAME = "JackisG/epg"
@@ -13,31 +13,29 @@ FILE_PATH = "languages/lit.m3u"
 TARGET_URL = "https://freeiptv2023-d.ottc.xyz/index.php?action=view"
 
 async def fetch_new_credentials():
-    print("🌐 Launching browser (rebrowser-playwright)...")
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
-        page = await browser.new_page()
+    print("🌐 Launching CloudflareSolver (free, latest version) ...")
+    solver = CloudflareSolver(
+        challenge_type=ChallengeType.TURNSTILE,
+        headless=True,
+        os=["windows"]
+    )
+    page_html = await solver.solve(TARGET_URL)
+    if not page_html:
+        raise Exception("Failed to solve Cloudflare challenge")
 
-        print("🔗 Navigating to page...")
-        await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
+    username_match = re.search(r'id="accUser"\s+value="([^"]+)"', page_html)
+    password_match = re.search(r'id="accPass"\s+value="([^"]+)"', page_html)
 
-        try:
-            await page.wait_for_selector("#accUser", timeout=30000)
-        except Exception:
-            content = await page.content()
-            print("⚠️ Page content (first 1000 chars):")
-            print(content[:1000])
-            raise Exception("Could not find #accUser – page may be blocked.")
+    if not username_match or not password_match:
+        print("⚠️ Could not find credentials in HTML. Snippet:")
+        print(page_html[:1000])
+        raise Exception("Credentials not found in solved page")
 
-        username = await page.get_attribute("#accUser", "value")
-        password = await page.get_attribute("#accPass", "value")
-        print(f"👤 Username: {username}")
-        print(f"🔑 Password: {password}")
-
-        await browser.close()
-        if not (username and password):
-            raise Exception("Credentials not found.")
-        return username, password
+    username = username_match.group(1)
+    password = password_match.group(1)
+    print(f"👤 Username: {username}")
+    print(f"🔑 Password: {password}")
+    return username, password
 
 def update_m3u_file(username, password):
     print("📂 Connecting to GitHub...")
@@ -73,7 +71,7 @@ def update_m3u_file(username, password):
         message=f"Auto-update credentials: username={username}",
         content="\n".join(new_lines),
         sha=contents.sha,
-        branch="master"   # change to "main" if your default branch is main
+        branch="master"
     )
     print(f"✅ Updated {replaced} URL(s) and pushed to GitHub.")
 
