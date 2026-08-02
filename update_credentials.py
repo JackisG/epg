@@ -4,7 +4,7 @@ import re
 import sys
 import asyncio
 from github import Github
-from cloakbrowser import launch  # Drop-in replacement for Playwright
+from cloakbrowser import launch_async  # ✅ Async version
 
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 REPO_NAME = "JackisG/epg"
@@ -13,19 +13,18 @@ TARGET_URL = "https://freeiptv2023-d.ottc.xyz/index.php?action=view"
 
 async def fetch_new_credentials():
     print("🌐 Launching CloakBrowser (free, cloudflare solver)...")
-    # Launch with human-like behavior and headless mode
-    browser = await launch(
+    # ✅ Use launch_async with await
+    browser = await launch_async(
         headless=True,
-        humanize=True,          # simulate human mouse/timing
+        humanize=True,
         args=["--no-sandbox", "--disable-dev-shm-usage"],
-        timeout=90000           # 90 seconds
+        timeout=90000
     )
     page = await browser.new_page()
 
     print("🔗 Navigating to the page...")
     await page.goto(TARGET_URL, wait_until="networkidle", timeout=90000)
 
-    # Wait for the credentials to appear (Turnstile is solved automatically)
     try:
         await page.wait_for_selector("#accUser", timeout=60000)
     except Exception:
@@ -51,7 +50,6 @@ def update_m3u_file(username, password):
     new_lines = []
     replaced = 0
 
-    # Matches: http://freeiptv.ottc.xyz:80/live/OLD_USER/OLD_PASS/file.ts
     pattern = re.compile(
         r'(http://freeiptv\.ottc\.xyz:[0-9]+/live/)\d+(/\d+/[^/\s]+)'
     )
