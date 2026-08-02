@@ -2,8 +2,8 @@
 <channels>
   <channel site="cgates.lt" site_id="2tv" lang="lt" xmltv_id="2TV.lt@SD">2TV</channel>
   <channel site="cgates.lt" site_id="animal-planet-hd" lang="lt" xmltv_id="">Animal Planet</channel>
-  <channel site="cgates.lt" site_id="balticum-auksinis" lang="lt" xmltv_id="BalticumAuksinis.lt@SD">Balticum Auksinis</channel>
-  <channel site="cgates.lt" site_id="balticum-platinum-hd" lang="uk" xmltv_id="">Balticum Platinum</channel>
+  <channel site="cgates.lt" site_id="balticum-auksinis" lang="lt" xmltv_id="BalticumAuksinis.lt@HD">Balticum Auksinis</channel>
+  <channel site="cgates.lt" site_id="balticum-platinum-hd" lang="uk" xmltv_id="BalticumPlatinum.lt@HD">Balticum Platinum</channel>
   <channel site="cgates.lt" site_id="balticum-tv" lang="lt" xmltv_id="BalticumTV.lt@SD">Balticum TV</channel>
   <channel site="cgates.lt" site_id="blue-hustler" lang="en" xmltv_id="BlueHustler.nl@SD">Blue Hustler</channel>
   <channel site="cgates.lt" site_id="btv-hd" lang="lt" xmltv_id="BTV.lt@SD">BTV</channel>
