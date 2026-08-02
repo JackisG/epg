@@ -13,9 +13,9 @@ FILE_PATH = "languages/lit.m3u"
 TARGET_URL = "https://freeiptv2023-d.ottc.xyz/index.php?action=view"
 
 async def fetch_new_credentials():
-    print("🌐 Running cloudflare-solver main.py (headless) ...")
+    print("🌐 Running cloudflare-solver main.py (headless with xvfb)...")
     try:
-        # Pass --headless to avoid GUI dependency
+        # Run the solver with --headless flag (though the env var should override)
         result = subprocess.run(
             ["python3", "cloudflare-solver/main.py", "--url", TARGET_URL, "--headless"],
             capture_output=True,
