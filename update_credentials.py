@@ -2,87 +2,44 @@
 import os
 import re
 import sys
-import time
 import asyncio
-import requests
 from github import Github
-from playwright.async_api import async_playwright
+from cloakbrowser import launch  # Drop-in replacement for Playwright
 
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
-CAPTCHA_API_KEY = os.environ["CAPTCHA_API_KEY"]
 REPO_NAME = "JackisG/epg"
 FILE_PATH = "languages/lit.m3u"
 TARGET_URL = "https://freeiptv2023-d.ottc.xyz/index.php?action=view"
 
-def solve_turnstile(sitekey, page_url):
-    print("🧩 Submitting Turnstile to 2Captcha...")
-    submit = requests.post(
-        "https://2captcha.com/in.php",
-        data={
-            "key": CAPTCHA_API_KEY,
-            "method": "turnstile",
-            "sitekey": sitekey,
-            "pageurl": page_url,
-            "json": 1
-        }
-    )
-    result = submit.json()
-    if result["status"] != 1:
-        raise Exception(f"Submission failed: {result}")
-    
-    captcha_id = result["request"]
-    for _ in range(30):
-        time.sleep(2)
-        poll = requests.get(
-            "https://2captcha.com/res.php",
-            params={"key": CAPTCHA_API_KEY, "action": "get", "id": captcha_id, "json": 1}
-        )
-        data = poll.json()
-        if data["status"] == 1:
-            print("✅ Turnstile solved!")
-            return data["request"]
-        if data["request"] == "CAPCHA_NOT_READY":
-            continue
-        raise Exception(f"Solving failed: {data}")
-    raise Exception("Timeout waiting for solution")
-
 async def fetch_new_credentials():
-    print("🌐 Launching browser...")
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
-        page = await browser.new_page()
+    print("🌐 Launching CloakBrowser (free, cloudflare solver)...")
+    # Launch with human-like behavior and headless mode
+    browser = await launch(
+        headless=True,
+        humanize=True,          # simulate human mouse/timing
+        args=["--no-sandbox", "--disable-dev-shm-usage"],
+        timeout=90000           # 90 seconds
+    )
+    page = await browser.new_page()
 
-        print("🔗 Navigating...")
-        await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=30000)
+    print("🔗 Navigating to the page...")
+    await page.goto(TARGET_URL, wait_until="networkidle", timeout=90000)
 
-        # Extract sitekey
-        sitekey = await page.get_attribute("div.cf-turnstile", "data-sitekey")
-        if not sitekey:
-            content = await page.content()
-            match = re.search(r'data-sitekey=["\']([^"\']+)["\']', content)
-            sitekey = match.group(1) if match else None
-        if not sitekey:
-            raise Exception("Could not find Turnstile sitekey")
-        print(f"🔑 Sitekey: {sitekey}")
+    # Wait for the credentials to appear (Turnstile is solved automatically)
+    try:
+        await page.wait_for_selector("#accUser", timeout=60000)
+    except Exception:
+        content = await page.content()
+        print("⚠️ Page content (first 1000 chars):")
+        print(content[:1000])
+        raise Exception("CloakBrowser did not solve Turnstile. Try again or use 2Captcha.")
 
-        # Solve via API
-        token = solve_turnstile(sitekey, TARGET_URL)
-
-        # Inject token and reload
-        await page.evaluate(f"""
-            document.querySelector('input[name="cf-turnstile-response"]').value = '{token}';
-        """)
-        await page.wait_for_timeout(2000)
-        await page.reload(wait_until="domcontentloaded")
-
-        # Wait for credentials
-        await page.wait_for_selector("#accUser", timeout=30000)
-        username = await page.get_attribute("#accUser", "value")
-        password = await page.get_attribute("#accPass", "value")
-        print(f"👤 New Username: {username}")
-        print(f"🔑 New Password: {password}")
-        await browser.close()
-        return username, password
+    username = await page.get_attribute("#accUser", "value")
+    password = await page.get_attribute("#accPass", "value")
+    print(f"👤 New Username: {username}")
+    print(f"🔑 New Password: {password}")
+    await browser.close()
+    return username, password
 
 def update_m3u_file(username, password):
     print("📂 Connecting to GitHub...")
@@ -94,8 +51,7 @@ def update_m3u_file(username, password):
     new_lines = []
     replaced = 0
 
-    # ✅ CORRECTED: matches path-based URLs like:
-    # http://freeiptv.ottc.xyz:80/live/OLD_USER/OLD_PASS/47287.ts
+    # Matches: http://freeiptv.ottc.xyz:80/live/OLD_USER/OLD_PASS/file.ts
     pattern = re.compile(
         r'(http://freeiptv\.ottc\.xyz:[0-9]+/live/)\d+(/\d+/[^/\s]+)'
     )
@@ -103,9 +59,8 @@ def update_m3u_file(username, password):
     for line in lines:
         m = pattern.search(line)
         if m:
-            # Reconstruct: base_url + new_username + new_password + rest
-            base = m.group(1)           # "http://freeiptv.ottc.xyz:80/live/"
-            rest = m.group(2)           # "/OLD_PASS/47287.ts" (includes the trailing filename)
+            base = m.group(1)
+            rest = m.group(2)
             new_line = line.replace(m.group(0), f"{base}{username}{rest}")
             new_lines.append(new_line)
             replaced += 1
@@ -115,7 +70,6 @@ def update_m3u_file(username, password):
 
     if replaced == 0:
         print("⚠️ No 'freeiptv.ottc.xyz' URLs found – nothing changed.")
-        print("💡 Check that your lit.m3u contains URLs like: http://freeiptv.ottc.xyz:80/live/XXX/YYY/ZZZ.ts")
         return
 
     repo.update_file(
