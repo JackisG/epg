@@ -13,11 +13,11 @@ FILE_PATH = "languages/lit.m3u"
 TARGET_URL = "https://freeiptv2023-d.ottc.xyz/index.php?action=view"
 
 async def fetch_new_credentials():
-    print("🌐 Running cloudflare-solver main.py ...")
-    # Run the solver's main script – it should accept a URL and output HTML
+    print("🌐 Running cloudflare-solver main.py (headless) ...")
     try:
+        # Pass --headless to avoid GUI dependency
         result = subprocess.run(
-            ["python3", "cloudflare-solver/main.py", "--url", TARGET_URL],
+            ["python3", "cloudflare-solver/main.py", "--url", TARGET_URL, "--headless"],
             capture_output=True,
             text=True,
             timeout=120,
@@ -32,14 +32,10 @@ async def fetch_new_credentials():
         raise Exception(f"Solver exited with code {result.returncode}")
 
     page_html = result.stdout
-
-    # The script might print extra logs; try to extract the actual HTML
+    # Extract HTML from output
     html_match = re.search(r'(<!DOCTYPE html>|<html).*?(</html>)', page_html, re.DOTALL | re.IGNORECASE)
     if html_match:
         page_html = html_match.group(0)
-    else:
-        # If no HTML found, assume the entire output is the HTML (maybe it's plain)
-        pass
 
     # Extract credentials
     username_match = re.search(r'id="accUser"\s+value="([^"]+)"', page_html)
