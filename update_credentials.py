@@ -1,48 +1,11 @@
 #!/usr/bin/env python3
 import os
-import sys
 import re
+import sys
 import traceback
+import subprocess
 import asyncio
 from github import Github
-
-# ---------- Dynamically locate cloudflare-solver module ----------
-def find_module(base_dir, module_name="cloudflare_solver"):
-    """Recursively search for a module folder containing __init__.py."""
-    for root, dirs, files in os.walk(base_dir):
-        if module_name in dirs:
-            potential_path = os.path.join(root, module_name)
-            if os.path.isdir(potential_path) and os.path.exists(os.path.join(potential_path, "__init__.py")):
-                return os.path.dirname(potential_path)  # parent directory
-        # Also check if a .py file with that name exists
-        for f in files:
-            if f == f"{module_name}.py":
-                return root
-    return None
-
-base_dir = "./cloudflare-solver"
-if not os.path.isdir(base_dir):
-    print(f"❌ Directory {base_dir} not found. Ensure it's cloned.")
-    sys.exit(1)
-
-module_path = find_module(base_dir)
-if module_path:
-    sys.path.insert(0, os.path.abspath(module_path))
-    print(f"📁 Added to PYTHONPATH: {os.path.abspath(module_path)}")
-else:
-    print("❌ Could not locate cloudflare_solver module. Dumping directory tree:")
-    os.system(f"find {base_dir} -type f -name '*.py' | head -20")
-    sys.exit(1)
-
-# Now import
-try:
-    from cloudflare_solver import CloudflareSolver, ChallengeType
-except ImportError as e:
-    print("❌ Failed to import cloudflare_solver even after path update.")
-    traceback.print_exc()
-    sys.exit(1)
-
-# --------------------------------------------------------------
 
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 REPO_NAME = "JackisG/epg"
@@ -50,16 +13,36 @@ FILE_PATH = "languages/lit.m3u"
 TARGET_URL = "https://freeiptv2023-d.ottc.xyz/index.php?action=view"
 
 async def fetch_new_credentials():
-    print("🌐 Launching CloudflareSolver (latest version from GitHub) ...")
-    solver = CloudflareSolver(
-        challenge_type=ChallengeType.TURNSTILE,
-        headless=True,
-        os=["windows"]
-    )
-    page_html = await solver.solve(TARGET_URL)
-    if not page_html:
-        raise Exception("Failed to solve Cloudflare challenge")
+    print("🌐 Running cloudflare-solver main.py ...")
+    # Run the solver's main script – it should accept a URL and output HTML
+    try:
+        result = subprocess.run(
+            ["python3", "cloudflare-solver/main.py", "--url", TARGET_URL],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False
+        )
+    except Exception as e:
+        raise Exception(f"Failed to run solver: {e}")
 
+    if result.returncode != 0:
+        print("❌ Solver stderr:")
+        print(result.stderr)
+        raise Exception(f"Solver exited with code {result.returncode}")
+
+    page_html = result.stdout
+
+    # The script might print extra logs; try to extract the actual HTML
+    # Look for the <html> tag or DOCTYPE
+    html_match = re.search(r'(<!DOCTYPE html>|<html).*?(</html>)', page_html, re.DOTALL | re.IGNORECASE)
+    if html_match:
+        page_html = html_match.group(0)
+    else:
+        # If no HTML found, assume the entire output is the HTML (maybe it's plain)
+        pass
+
+    # Extract credentials
     username_match = re.search(r'id="accUser"\s+value="([^"]+)"', page_html)
     password_match = re.search(r'id="accPass"\s+value="([^"]+)"', page_html)
 
