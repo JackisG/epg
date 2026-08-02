@@ -4,7 +4,7 @@ import re
 import sys
 import traceback
 from github import Github
-from scrapling.fetchers import StealthyFetcher
+from scrapling.fetchers import DynamicFetcher
 
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 REPO_NAME = "JackisG/epg"
@@ -12,13 +12,13 @@ FILE_PATH = "languages/lit.m3u"
 TARGET_URL = "https://freeiptv2023-d.ottc.xyz/index.php?action=view"
 
 def fetch_new_credentials():
-    print("🌐 Fetching page with StealthyFetcher...")
-    page = StealthyFetcher.fetch(
+    print("🌐 Fetching page with DynamicFetcher...")
+    # DynamicFetcher uses Playwright directly – no header generator issues
+    page = DynamicFetcher.fetch(
         TARGET_URL,
-        solve_cloudflare=True,
         headless=True,
         network_idle=True,
-        timeout=90
+        timeout=90000  # milliseconds
     )
     if page.status != 200:
         raise Exception(f"Page status {page.status}")
@@ -70,7 +70,7 @@ def update_m3u_file(username, password):
         message=f"Auto-update credentials: username={username}",
         content="\n".join(new_lines),
         sha=contents.sha,
-        branch="master"   # change to "main" if your default branch is main
+        branch="master"   # change to "main" if needed
     )
     print(f"✅ Updated {replaced} URL(s) and pushed to GitHub.")
 
