@@ -65,25 +65,28 @@ async def fetch_new_credentials():
     print("🔗 Navigating to page (domcontentloaded)...")
     await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
 
-    # Let CloakBrowser try to solve automatically
-    await page.wait_for_timeout(10000)
-
-    # Check if credentials already loaded (Turnstile solved by CloakBrowser)
-    username = await page.get_attribute("#accUser", "value")
-    password = await page.get_attribute("#accPass", "value")
-    if username and password:
+    # Wait for either the credentials OR the Turnstile widget
+    # If credentials appear first, we're done.
+    try:
+        # Wait for #accUser to appear, but only for 15 seconds
+        await page.wait_for_selector("#accUser", timeout=15000)
+        username = await page.get_attribute("#accUser", "value")
+        password = await page.get_attribute("#accPass", "value")
         print(f"👤 CloakBrowser auto-solved! Username: {username}")
         print(f"🔑 Password: {password}")
         await browser.close()
         return username, password
+    except Exception:
+        print("⏳ Credentials not found yet. Looking for Turnstile challenge...")
 
-    # If not, manually solve via anti-captcha
-    print("⏳ Turnstile not auto-solved. Extracting sitekey for manual solve...")
+    # If credentials didn't appear, find the sitekey
     sitekey = None
     try:
-        await page.wait_for_selector("[data-sitekey]", timeout=30000)
+        # Wait for the Turnstile widget
+        await page.wait_for_selector("[data-sitekey]", timeout=15000)
         sitekey = await page.get_attribute("[data-sitekey]", "data-sitekey")
     except Exception:
+        # Fallback: search in HTML
         content = await page.content()
         match = re.search(r'data-sitekey=["\']([^"\']+)["\']', content)
         if match:
@@ -93,12 +96,14 @@ async def fetch_new_credentials():
         content = await page.content()
         print("⚠️ Full page content (first 2000 chars):")
         print(content[:2000])
-        raise Exception("Could not find Turnstile sitekey. Page may be blocking.")
+        raise Exception("Could not find Turnstile sitekey. Page may be blocked.")
 
     print(f"🔑 Sitekey: {sitekey}")
 
+    # Solve via anti-captcha
     token = solve_turnstile_anticaptcha(sitekey, TARGET_URL)
 
+    # Inject token
     await page.evaluate(f"""
         const input = document.querySelector('input[name="cf-turnstile-response"]');
         if (input) input.value = '{token}';
@@ -106,6 +111,7 @@ async def fetch_new_credentials():
     await page.wait_for_timeout(2000)
     await page.reload(wait_until="domcontentloaded")
 
+    # Wait for credentials after injection
     try:
         await page.wait_for_selector("#accUser", timeout=30000)
     except Exception:
@@ -131,7 +137,6 @@ def update_m3u_file(username, password):
     new_lines = []
     replaced = 0
 
-    # Matches: http://freeiptv.ottc.xyz:80/live/OLD_USER/OLD_PASS/file.ts
     pattern = re.compile(
         r'(http://freeiptv\.ottc\.xyz:[0-9]+/live/)\d+(/\d+/[^/\s]+)'
     )
