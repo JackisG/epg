@@ -1,2 +1,3 @@
 rebrowser-playwright
 PyGithub
+requests

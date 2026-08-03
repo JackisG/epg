@@ -2,14 +2,65 @@
 import os
 import re
 import sys
+import time
 import asyncio
+import requests
 from github import Github
 from rebrowser_playwright.async_api import async_playwright
 
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
+TWOCAPTCHA_API_KEY = os.environ["TWOCAPTCHA_API_KEY"]
 REPO_NAME = "JackisG/epg"
 FILE_PATH = "languages/lit.m3u"
 TARGET_URL = "https://freeiptv2023-d.ottc.xyz/index.php?action=view"
+
+# Known sitekey for this domain (hardcoded fallback)
+KNOWN_SITEKEY = "0x4AAAAAAA_Qtby-wpbozX7J"
+
+def solve_turnstile_2captcha(sitekey, page_url):
+    print("🧩 Submitting Turnstile to 2Captcha...")
+    # Submit the challenge
+    submit_payload = {
+        "key": TWOCAPTCHA_API_KEY,
+        "method": "turnstile",
+        "sitekey": sitekey,
+        "pageurl": page_url,
+        "json": 1,
+    }
+    submit_resp = requests.post(
+        "https://2captcha.com/in.php",
+        data=submit_payload,
+        timeout=30
+    )
+    submit_data = submit_resp.json()
+    if submit_data.get("status") != 1:
+        raise Exception(f"Submission failed: {submit_data}")
+    captcha_id = submit_data["request"]
+    print(f"📝 Captcha ID: {captcha_id}")
+
+    # Poll for result
+    result_payload = {
+        "key": TWOCAPTCHA_API_KEY,
+        "action": "get",
+        "id": captcha_id,
+        "json": 1,
+    }
+    for _ in range(30):  # max 30 * 3 = 90 seconds
+        time.sleep(3)
+        result_resp = requests.get(
+            "https://2captcha.com/res.php",
+            params=result_payload,
+            timeout=30
+        )
+        result_data = result_resp.json()
+        if result_data.get("status") == 1:
+            token = result_data["request"]
+            print("✅ Turnstile solved!")
+            return token
+        if result_data.get("request") == "CAPCHA_NOT_READY":
+            continue
+        raise Exception(f"Polling error: {result_data}")
+    raise Exception("Timeout waiting for solution")
 
 async def fetch_new_credentials():
     print("🌐 Launching rebrowser-playwright (stealth)...")
@@ -24,6 +75,7 @@ async def fetch_new_credentials():
         )
         page = await context.new_page()
 
+        # Apply stealth
         await page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             delete window.__playwright__binding__;
@@ -34,13 +86,58 @@ async def fetch_new_credentials():
         print("🔗 Navigating to page...")
         await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
 
+        # Wait briefly for credentials or challenge
         try:
-            await page.wait_for_selector("#accUser", timeout=60000)
+            await page.wait_for_selector("#accUser", timeout=15000)
+            username = await page.get_attribute("#accUser", "value")
+            password = await page.get_attribute("#accPass", "value")
+            if username and password:
+                print(f"👤 Credentials found! Username: {username}")
+                print(f"🔑 Password: {password}")
+                await browser.close()
+                return username, password
+        except Exception:
+            print("⏳ Credentials not loaded yet. Looking for challenge...")
+
+        # Try to find sitekey
+        sitekey = None
+        try:
+            await page.wait_for_selector("[data-sitekey]", timeout=10000)
+            sitekey = await page.get_attribute("[data-sitekey]", "data-sitekey")
+        except Exception:
+            pass
+
+        if not sitekey:
+            content = await page.content()
+            match = re.search(r'data-sitekey=["\']([^"\']+)["\']', content)
+            if match:
+                sitekey = match.group(1)
+
+        if not sitekey:
+            print("⚠️ Could not find sitekey. Using known sitekey.")
+            sitekey = KNOWN_SITEKEY
+
+        print(f"🔑 Using sitekey: {sitekey}")
+
+        # Solve via 2Captcha
+        token = solve_turnstile_2captcha(sitekey, TARGET_URL)
+
+        # Inject token and reload
+        await page.evaluate(f"""
+            const input = document.querySelector('input[name="cf-turnstile-response"]');
+            if (input) input.value = '{token}';
+        """)
+        await page.wait_for_timeout(2000)
+        await page.reload(wait_until="domcontentloaded")
+
+        # Wait for credentials
+        try:
+            await page.wait_for_selector("#accUser", timeout=30000)
         except Exception:
             content = await page.content()
-            print("⚠️ Page content (first 1000 chars):")
+            print("⚠️ Page after injection (first 1000 chars):")
             print(content[:1000])
-            raise Exception("Credentials not found – Turnstile not solved.")
+            raise Exception("Credentials not found – token may have been rejected.")
 
         username = await page.get_attribute("#accUser", "value")
         password = await page.get_attribute("#accPass", "value")
@@ -53,15 +150,12 @@ def update_m3u_file(username, password):
     print("📂 Connecting to GitHub...")
     g = Github(GITHUB_TOKEN)
     repo = g.get_repo(REPO_NAME)
-
     contents = repo.get_contents(FILE_PATH)
     current = contents.decoded_content.decode("utf-8")
     lines = current.splitlines()
     new_lines = []
     replaced = 0
 
-    # ✅ CORRECTED: matches path-based URLs like:
-    # http://freeiptv.ottc.xyz:80/live/OLD_USER/OLD_PASS/47287.ts
     pattern = re.compile(
         r'(http://freeiptv\.ottc\.xyz:[0-9]+/live/)\d+(/\d+/[^/\s]+)'
     )
@@ -69,8 +163,8 @@ def update_m3u_file(username, password):
     for line in lines:
         m = pattern.search(line)
         if m:
-            base = m.group(1)      # "http://freeiptv.ottc.xyz:80/live/"
-            rest = m.group(2)      # "/OLD_PASS/47287.ts"
+            base = m.group(1)
+            rest = m.group(2)
             new_line = line.replace(m.group(0), f"{base}{username}{rest}")
             new_lines.append(new_line)
             replaced += 1
@@ -80,7 +174,6 @@ def update_m3u_file(username, password):
 
     if replaced == 0:
         print("⚠️ No 'freeiptv.ottc.xyz' URLs found – nothing changed.")
-        print("💡 Check that your lit.m3u contains URLs like: http://freeiptv.ottc.xyz:80/live/XXX/YYY/ZZZ.ts")
         return
 
     repo.update_file(
