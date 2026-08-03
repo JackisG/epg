@@ -66,8 +66,6 @@ async def fetch_new_credentials():
 
         print("🔗 Navigating to page...")
         await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
-
-        # Wait for the page to settle and maybe load the challenge
         await page.wait_for_timeout(5000)
 
         # Check if credentials already visible
@@ -82,17 +80,15 @@ async def fetch_new_credentials():
         except Exception:
             pass
 
-        # Extract sitekey - wait longer and try multiple selectors
+        # Extract sitekey
         sitekey = None
-        for attempt in range(3):  # retry up to 3 times
+        for attempt in range(3):
             try:
-                # Try to find the Turnstile widget
                 await page.wait_for_selector("[data-sitekey]", timeout=15000)
                 sitekey = await page.get_attribute("[data-sitekey]", "data-sitekey")
                 if sitekey:
                     break
             except Exception:
-                # Maybe the widget is inside an iframe; try to get from page source
                 content = await page.content()
                 match = re.search(r'data-sitekey=["\']([^"\']+)["\']', content)
                 if match:
@@ -101,7 +97,6 @@ async def fetch_new_credentials():
             await page.wait_for_timeout(3000)
 
         if not sitekey:
-            # Last resort: use a known sitekey from previous runs (might be stale)
             print("⚠️ Could not find sitekey. Using known sitekey (may be outdated).")
             sitekey = "0x4AAAAAAA_Qtby-wpbozX7J"
 
@@ -110,26 +105,24 @@ async def fetch_new_credentials():
         # Solve via 2Captcha
         token = solve_turnstile_2captcha(sitekey, TARGET_URL)
 
-        # Inject token
-        await page.evaluate(f"""
+        # Inject token – correct syntax: escape braces with double {{ }}
+        await page.evaluate("""
             const input = document.querySelector('input[name="cf-turnstile-response"]');
-            if (input) input.value = '{token}';
+            if (input) input.value = '{}';
             // Also try to trigger the submit event
             const form = input ? input.closest('form') : null;
-            if (form) {
-                form.dispatchEvent(new Event('submit', { bubbles: true }));
-            }
-        """)
+            if (form) {{
+                form.dispatchEvent(new Event('submit', {{ bubbles: true }}));
+            }}
+        """.format(token))
 
-        # Wait for the challenge to disappear and credentials to appear
+        # Wait for credentials to appear
         try:
-            # Wait for the Turnstile widget to disappear (or credentials to appear)
             await page.wait_for_selector("#accUser", timeout=60000)
         except Exception:
             content = await page.content()
             print("⚠️ Page after injection (full content):")
             print(content[:2000])
-            # Also check for any error messages
             if "The security check didn't complete successfully" in content:
                 raise Exception("Token rejected by Cloudflare")
             raise Exception("Credentials not found after injection")
