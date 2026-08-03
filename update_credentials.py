@@ -1,157 +1,137 @@
 import os
-import re
+import sys
 import time
-import subprocess
 import requests
-import pytz
+import json
+import re
 from datetime import datetime
+import pytz
 from bs4 import BeautifulSoup
+from twocaptcha import TwoCaptcha
+from base64 import b64encode
+from nacl.public import PublicKey, SealedBox
 
 def check_time():
-    """Ensure the script only runs exactly at 5 AM Lithuanian time."""
-    if os.getenv('GITHUB_ACTIONS') == 'true':
-        vilnius_tz = pytz.timezone('Europe/Vilnius')
-        now = datetime.now(vilnius_tz)
-        if now.hour != 5:
-            print(f"Current time in Vilnius is {now.hour}:{now.minute}. Skipping execution until 5 AM.")
-            exit(0)
-
-def solve_turnstile(api_key):
-    print("Solving Turnstile captcha with 2captcha...")
-    payload = {
-        "clientKey": api_key,
-        "task": {
-            "type": "TurnstileTaskProxyless",
-            "websiteURL": "https://freeiptv2023-d.ottc.xyz/index.php",
-            "websiteKey": "0x4AAAAAAA_Qtby-wpbozX7J"
-        }
-    }
-    res = requests.post("https://api.2captcha.com/createTask", json=payload, timeout=30).json()
-    if "errorId" in res and res["errorId"] != 0:
-        raise Exception(f"2captcha createTask error: {res}")
-    
-    task_id = res["taskId"]
-    
-    while True:
-        time.sleep(5)
-        res = requests.post("https://api.2captcha.com/getTaskResult", json={
-            "clientKey": api_key,
-            "taskId": task_id
-        }, timeout=30).json()
+    # Bypass time check if FORCE_RUN is set to 'true' (via workflow_dispatch)
+    if os.getenv('FORCE_RUN', 'false').lower() == 'true':
+        print("✅ FORCE_RUN is enabled. Bypassing Vilnius time check.")
+        return True
         
-        if res.get("status") == "processing":
-            continue
-        elif res.get("status") == "ready":
-            print("Captcha solved successfully.")
-            return res["solution"]["token"]
-        else:
-            raise Exception(f"2captcha getTaskResult error: {res}")
-
-def get_credentials(api_key):
-    token = solve_turnstile(api_key)
-    session = requests.Session()
+    vilnius_tz = pytz.timezone('Europe/Vilnius')
+    now = datetime.now(vilnius_tz)
+    current_hour = now.hour
+    current_minute = now.minute
     
+    # Only run between 5 AM and 6 AM Vilnius time
+    if current_hour < 5:
+        print(f"⏳ Current time in Vilnius is {current_hour}:{current_minute}. Skipping execution until 5 AM.")
+        return False
+    return True
+
+def solve_turnstile(api_key, site_key, url):
+    solver = TwoCaptcha(api_key)
+    try:
+        print("🧩 Sending Turnstile challenge to 2Captcha...")
+        result = solver.turnstile(sitekey=site_key, url=url)
+        print("✅ Turnstile solved successfully.")
+        return result['code']
+    except Exception as e:
+        print(f"❌ Error solving Turnstile: {e}")
+        sys.exit(1)
+
+def get_credentials(token):
+    url = "https://freeiptv2023-d.ottc.xyz/index.php"
+    payload = {
+        "cf-turnstile-response": token
+    }
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Origin": "https://freeiptv2023-d.ottc.xyz",
         "Referer": "https://freeiptv2023-d.ottc.xyz/index.php"
     }
     
-    # Get initial page to establish session/cookies
-    session.get("https://freeiptv2023-d.ottc.xyz/index.php", headers=headers, timeout=30)
+    session = requests.Session()
+    session.get(url, headers=headers)
+    response = session.post(url, data=payload, headers=headers)
     
-    # Submit the form with the Turnstile token
-    data = {
-        "cf-turnstile-response": token
+    if "IPTV account information" not in response.text:
+        print("❌ Failed to retrieve credentials. Captcha might be invalid or page structure changed.")
+        sys.exit(1)
+        
+    soup = BeautifulSoup(response.text, 'html.parser')
+    text = soup.get_text()
+    
+    # Extracting credentials using Regex based on the site's text layout
+    server_url = re.search(r'IPTV Server URL\s*([a-zA-Z0-9\-\.\/:_]+)', text)
+    username = re.search(r'IPTV Username\s*([a-zA-Z0-9]+)', text)
+    password = re.search(r'IPTV Password\s*([a-zA-Z0-9]+)', text)
+    m3u_link = re.search(r'M3U Download Link\s*(http[s]?://[^\s]+)', text)
+    
+    if not all([server_url, username, password, m3u_link]):
+        print("❌ Could not parse all credentials from the page.")
+        print("Page text snippet:", text[:500])
+        sys.exit(1)
+        
+    creds = {
+        "IPTV_SERVER_URL": server_url.group(1).strip(),
+        "IPTV_USERNAME": username.group(1).strip(),
+        "IPTV_PASSWORD": password.group(1).strip(),
+        "IPTV_M3U_LINK": m3u_link.group(1).strip()
     }
     
-    print("Submitting form...")
-    resp = session.post("https://freeiptv2023-d.ottc.xyz/index.php", data=data, headers=headers, timeout=30)
-    html = resp.text
-    
-    # Extract credentials
-    # Look for M3U link pattern: .../live/USER/PASS/... or ...?username=USER&password=PASS...
-    m3u_match = re.search(r'freeiptv\.ottc\.xyz[^"\'>\s]*?(?:username=|/live/)(\d+)[^"\'>\s]*?(?:password=|/)(\d+)', html)
-    if m3u_match:
-        return m3u_match.group(1), m3u_match.group(2)
-    
-    # Fallback: Look for 10-14 digit numbers in the text
-    soup = BeautifulSoup(html, 'html.parser')
-    text = soup.get_text()
-    nums = re.findall(r'\b\d{10,14}\b', text)
-    if len(nums) >= 2:
-        return nums[0], nums[1]
-        
-    raise Exception("Could not extract credentials from the response page.")
+    print("✅ Credentials extracted successfully.")
+    return creds
 
-def update_m3u_file(username, password):
-    print(f"New credentials - Username: {username}, Password: {password}")
-    
-    m3u_path = "languages/lit.m3u"
-    if not os.path.exists(m3u_path):
-        raise FileNotFoundError(f"{m3u_path} not found in the repository.")
-        
-    with open(m3u_path, "r", encoding="utf-8") as f:
-        content = f.read()
-        
-    # Find old credentials
-    old_match = re.search(r'freeiptv\.ottc\.xyz[^"\'>\s]*?(?:username=|/live/)(\d+)[^"\'>\s]*?(?:password=|/)(\d+)', content)
-    
-    if old_match:
-        old_user = old_match.group(1)
-        old_pass = old_match.group(2)
-        print(f"Replacing old credentials - Username: {old_user}, Password: {old_pass}")
-        content = content.replace(old_user, username)
-        content = content.replace(old_pass, password)
-    else:
-        # Fallback: find any two 10-14 digit numbers in lines containing freeiptv.ottc.xyz
-        lines = content.split('\n')
-        for line in lines:
-            if 'freeiptv.ottc.xyz' in line:
-                nums = re.findall(r'\b\d{10,14}\b', line)
-                if len(nums) >= 2:
-                    print(f"Replacing fallback credentials - Username: {nums[0]}, Password: {nums[1]}")
-                    content = content.replace(nums[0], username)
-                    content = content.replace(nums[1], password)
-                    break
-                    
-    with open(m3u_path, "w", encoding="utf-8") as f:
-        f.write(content)
-        
-    print("M3U file updated successfully.")
+def encrypt_secret(public_key: str, secret_value: str) -> str:
+    pk = PublicKey(public_key.encode("utf-8"))
+    sealed_box = SealedBox(pk)
+    encrypted = sealed_box.encrypt(secret_value.encode("utf-8"))
+    return b64encode(encrypted).decode("utf-8")
 
-def commit_and_push():
-    print("Committing and pushing changes...")
-    subprocess.run(["git", "config", "--global", "user.name", "github-actions[bot]"])
-    subprocess.run(["git", "config", "--global", "user.email", "github-actions[bot]@users.noreply.github.com"])
-    subprocess.run(["git", "add", "languages/lit.m3u"])
+def update_github_secrets(creds):
+    token = os.getenv('GITHUB_TOKEN')
+    repo = os.getenv('GITHUB_REPOSITORY')
     
-    # Check if there are changes to commit
-    result = subprocess.run(["git", "diff", "--staged", "--quiet"])
-    if result.returncode == 0:
-        print("No changes to commit.")
+    if not token or not repo:
+        print("❌ Missing GITHUB_TOKEN or GITHUB_REPOSITORY environment variables.")
         return
-        
-    subprocess.run(["git", "commit", "-m", "Update IPTV credentials [skip ci]"])
+
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
     
-    token = os.getenv("GITHUB_TOKEN")
-    repo = os.getenv("GITHUB_REPOSITORY")
-    if token and repo:
-        remote_url = f"https://x-access-token:{token}@github.com/{repo}.git"
-        subprocess.run(["git", "push", remote_url, "HEAD:master"])
-        print("Pushed successfully.")
-    else:
-        print("GITHUB_TOKEN or GITHUB_REPOSITORY not set. Skipping push.")
+    pub_key_url = f"https://api.github.com/repos/{repo}/actions/secrets/public-key"
+    res = requests.get(pub_key_url, headers=headers).json()
+    
+    if 'key' not in res:
+        print("❌ Failed to fetch repository public key. Ensure your PAT_TOKEN has 'repo' scope.")
+        print(res)
+        sys.exit(1)
+        
+    for secret_name, secret_value in creds.items():
+        encrypted_value = encrypt_secret(res['key'], secret_value)
+        secret_url = f"https://api.github.com/repos/{repo}/actions/secrets/{secret_name}"
+        payload = {
+            "encrypted_value": encrypted_value,
+            "key_id": res['key_id']
+        }
+        r = requests.put(secret_url, headers=headers, json=payload)
+        if r.status_code in [201, 204]:
+            print(f"✅ Successfully updated secret: {secret_name}")
+        else:
+            print(f"❌ Failed to update {secret_name}: {r.text}")
 
 if __name__ == "__main__":
-    try:
-        check_time()
-        api_key = os.getenv("TWOCAPTCHA_API_KEY")
-        if not api_key:
-            raise ValueError("TWOCAPTCHA_API_KEY environment variable not set.")
-            
-        user, passwd = get_credentials(api_key)
-        update_m3u_file(user, passwd)
-        commit_and_push()
-    except Exception as e:
-        print(f"Error: {e}")
-        exit(1)
+    if not check_time():
+        sys.exit(0)
+        
+    api_key = os.getenv('TWOCAPTCHA_API_KEY')
+    site_key = "0x4AAAAAAA_Qtby-wpbozX7J" # Extracted from freeiptv2023-d.ottc.xyz
+    url = "https://freeiptv2023-d.ottc.xyz/index.php"
+    
+    token = solve_turnstile(api_key, site_key, url)
+    creds = get_credentials(token)
+    update_github_secrets(creds)
+    print("🎉 Workflow completed successfully.")
