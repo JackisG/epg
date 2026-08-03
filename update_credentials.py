@@ -1,127 +1,88 @@
 import os
 import re
+import sys
 import time
-import json
 import requests
 from bs4 import BeautifulSoup
 from twocaptcha import TwoCaptcha
 
-# --- Configuration ---
-SITE_URL = "https://freeiptv2023-d.ottc.xyz/index.php"
-SITE_KEY = "0x4AAAAAAA_Qtby-wpbozX7J"  # Extracted from the site's Turnstile config
-API_KEY = os.environ.get("TWOCAPTCHA_API_KEY")
-
-solver = TwoCaptcha(API_KEY)
-
-def get_turnstile_token():
-    print("🧩 Sending Turnstile challenge to 2Captcha...")
-    try:
-        result = solver.turnstile(
-            sitekey=SITE_KEY,
-            url=SITE_URL
-        )
-        print("✅ Turnstile solved successfully.")
-        return result['code']
-    except Exception as e:
-        print(f"❌ 2Captcha error: {e}")
-        return None
-
-def extract_credentials(html_content):
-    """
-    Robust parser that handles tightly packed DOM text where labels 
-    and values might be concatenated without spaces.
-    """
-    soup = BeautifulSoup(html_content, 'html.parser')
-    creds = {}
-    
-    mapping = {
-        "IPTV Server URL": "server",
-        "IPTV Username": "username",
-        "IPTV Password": "password",
-        "M3U Download Link": "m3u",
-        "Activation Time": "activation",
-        "Expiration Time": "expiration"
-    }
-    
-    # Strategy 1: Standard DOM Traversal
-    for label, key in mapping.items():
-        label_el = soup.find(string=re.compile(re.escape(label)))
-        if label_el:
-            parent = label_el.find_parent(['tr', 'div', 'li', 'p', 'table'])
-            if parent:
-                next_cell = parent.find_next(['td', 'div', 'span', 'a', 'input', 'strong'])
-                if next_cell:
-                    if next_cell.name == 'input':
-                        creds[key] = next_cell.get('value', '').strip()
-                    elif next_cell.name == 'a':
-                        creds[key] = next_cell.get('href', next_cell.get_text()).strip()
-                    else:
-                        creds[key] = next_cell.get_text(strip=True)
-        
-        # Strategy 2: Regex Fallback for concatenated text (e.g. "IPTV Usernamejohndoe")
-        if not creds.get(key):
-            text = soup.get_text()
-            next_labels = [re.escape(l) for l in mapping.keys() if l != label]
-            # Capture everything between the current label and the next known label
-            pattern = rf"{re.escape(label)}(.*?)(?:{'|'.join(next_labels)}|$)"
-            match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
-            if match:
-                val = match.group(1).strip()
-                val = re.sub(r'\s+', ' ', val).strip() # Clean up whitespace
-                if val:
-                    creds[key] = val
-
-    return creds
+API_KEY = os.getenv('TWOCAPTCHA_API_KEY')
+BASE_URL = "https://freeiptv2023-d.ottc.xyz"
+INDEX_URL = f"{BASE_URL}/index.php"
+VIEW_URL = f"{BASE_URL}/index.php?action=view"
 
 def main():
-    token = get_turnstile_token()
-    if not token:
-        print("❌ Failed to get Turnstile token.")
-        exit(1)
-
+    # 1. Initialize Session FIRST to persist cookies and TLS fingerprint
     session = requests.Session()
-    # Use a realistic User-Agent to prevent Cloudflare from dropping the POST request
     session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
-        "Referer": SITE_URL,
-        "Origin": "https://freeiptv2023-d.ottc.xyz"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": BASE_URL,
+        "Origin": BASE_URL
     })
 
-    # 1. Establish Session (Crucial for Cloudflare & PHP Session Cookies)
+    # 2. Fetch initial page and cookies BEFORE solving captcha
     print("🌐 Initializing session and fetching cookies...")
-    session.get(SITE_URL)
-    time.sleep(2) # Mimic human delay to avoid rate limits
+    resp = session.get(INDEX_URL)
+    if resp.status_code != 200:
+        print(f"❌ Failed to load main page: {resp.status_code}")
+        sys.exit(1)
+        
+    # 3. Extract Sitekey dynamically (fallback to known sitekey from HAR)
+    match = re.search(r'sitekey:\s*["\']([0-9A-Za-z_-]+)["\']', resp.text)
+    sitekey = match.group(1) if match else "0x4AAAAAAA_Qtby-wpbozX7J"
+    print(f"🔑 Using Sitekey: {sitekey}")
 
-    # 2. Submit the POST request with the exact Turnstile parameter name
+    # 4. Solve Captcha
+    print("🧩 Sending Turnstile challenge to 2Captcha...")
+    try:
+        solver = TwoCaptcha(API_KEY)
+        result = solver.turnstile(
+            sitekey=sitekey,
+            url=INDEX_URL,
+            invisible=1,
+            action="",
+            cData=""
+        )
+        token = result['code']
+        print("✅ Turnstile solved successfully.")
+    except Exception as e:
+        print(f"❌ Failed to solve Turnstile: {e}")
+        sys.exit(1)
+
+    # 5. Submit POST request IMMEDIATELY using the SAME session
     print("📤 Submitting credentials request...")
-    payload = {
-        "cf-turnstile-response": token  # MUST be this exact key
+    post_data = {
+        "cf-turnstile-response": token  # Crucial: This is the exact field name Turnstile expects
     }
     
-    response = session.post(SITE_URL, data=payload, allow_redirects=True)
+    # Post to the same URL (form action is empty)
+    resp = session.post(INDEX_URL, data=post_data, allow_redirects=True)
     
-    # 3. Verify and Parse
-    if "IPTV account information" in response.text or "IPTV Server URL" in response.text:
-        print("✅ Successfully reached the credentials page!")
-        creds = extract_credentials(response.text)
+    # The site might redirect to ?action=view or require a manual GET using the established session
+    if "?action=view" not in resp.url and "IPTV account information" not in resp.text:
+        print("🔄 Following redirect to credentials view...")
+        resp = session.get(VIEW_URL)
+
+    # 6. Parse Credentials
+    if "IPTV account information" in resp.text or "IPTV Server URL" in resp.text:
+        print("✅ Credentials retrieved successfully!")
+        soup = BeautifulSoup(resp.text, 'html.parser')
         
-        if creds.get("username") and creds.get("password"):
-            print(f"🎯 Extracted Credentials: {json.dumps(creds, indent=2)}")
-            
-            # --- INSERT YOUR LOGIC TO UPDATE REPO / SAVE FILE HERE ---
-            # Example: Save to a JSON file for the next workflow steps
-            with open('credentials.json', 'w') as f:
-                json.dump(creds, f)
-            
-        else:
-            print("❌ Reached the page, but failed to parse credentials. DOM structure likely changed.")
-            print("Debug HTML Snippet:", response.text[:1000])
-            exit(1)
+        # Extract credentials (Adjust selectors if the site structure changes)
+        text = soup.get_text(separator='\n', strip=True)
+        print("📜 Raw Credentials Text Snippet:")
+        print(text[:500])
+        
+        # TODO: Add your logic here to parse Server URL, Username, Password, M3U Link
+        # and update your repository files/commit via GITHUB_TOKEN.
+        
     else:
         print("❌ Failed to retrieve credentials. Captcha rejected or page structure changed.")
-        print("Response Status:", response.status_code)
-        print("Response Snippet:", response.text[:500])
-        exit(1)
+        print("Response Status:", resp.status_code)
+        print("Response Snippet:", resp.text[:500])
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
