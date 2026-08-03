@@ -24,6 +24,21 @@ def solve_turnstile(sitekey: str, page_url: str) -> str:
         raise
 
 
+def follow_redirects(session, response, max_redirects=10):
+    """Manually follow redirects until a non-redirect response is received."""
+    redirect_count = 0
+    while response.status_code in (301, 302, 303, 307, 308) and redirect_count < max_redirects:
+        location = response.headers.get("Location")
+        if not location:
+            break
+        if not location.startswith(("http://", "https://")):
+            location = requests.compat.urljoin(BASE_URL, location)
+        print(f"Following redirect to {location}")
+        response = session.get(location, allow_redirects=False)
+        redirect_count += 1
+    return response
+
+
 def fetch_credentials() -> tuple[str, str]:
     """Fetch new username and password from the website."""
     session = requests.Session()
@@ -48,24 +63,24 @@ def fetch_credentials() -> tuple[str, str]:
     token = solve_turnstile(sitekey, index_url)
     print(f"Received Turnstile token: {token[:20]}...")
 
-    # 3. Submit the form with the token
+    # 3. Submit the form with the token (do not auto-follow redirects)
     data = {"cf-turnstile-response": token}
-    post_resp = session.post(index_url, data=data, allow_redirects=True)
+    post_resp = session.post(index_url, data=data, allow_redirects=False)
+    print(f"POST response status: {post_resp.status_code}")
 
-    # 4. Follow any remaining redirects manually (just in case)
-    while post_resp.status_code in (301, 302, 303, 307, 308):
-        location = post_resp.headers.get("Location")
-        if not location:
-            break
-        if not location.startswith("http"):
-            location = requests.compat.urljoin(BASE_URL, location)
-        post_resp = session.get(location, allow_redirects=True)
+    # 4. Manually follow redirects
+    final_resp = follow_redirects(session, post_resp)
+    print(f"Final URL: {final_resp.url}")
+    print(f"Final status: {final_resp.status_code}")
 
-    # 5. Verify we are on the credentials page
-    if "IPTV account information" not in post_resp.text:
+    # 5. Check if we got the credentials page
+    if "IPTV account information" not in final_resp.text:
+        # Dump a snippet for debugging
+        snippet = final_resp.text[:500]
+        print("Response snippet:", snippet)
         raise RuntimeError("Failed to reach credentials page")
 
-    soup = BeautifulSoup(post_resp.text, "html.parser")
+    soup = BeautifulSoup(final_resp.text, "html.parser")
     user_input = soup.find("input", {"id": "accUser"})
     pass_input = soup.find("input", {"id": "accPass"})
     if not user_input or not pass_input:
@@ -109,7 +124,6 @@ def update_m3u_file(file_path: str, new_user: str, new_pass: str) -> None:
 def main():
     try:
         username, password = fetch_credentials()
-        # The m3u file is expected to be at languages/lit.m3u relative to repo root
         m3u_path = "languages/lit.m3u"
         if not os.path.isfile(m3u_path):
             raise FileNotFoundError(f"Could not find {m3u_path}")
