@@ -2,46 +2,120 @@
 import os
 import re
 import sys
+import time
 import asyncio
+import json
+import requests
 from github import Github
-from cloakbrowser import launch_async
+from playwright.async_api import async_playwright
 
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
+ANTICAPTCHA_API_KEY = os.environ["ANTICAPTCHA_API_KEY"]
 REPO_NAME = "JackisG/epg"
 FILE_PATH = "languages/lit.m3u"
 TARGET_URL = "https://freeiptv2023-d.ottc.xyz/index.php?action=view"
 
-async def fetch_new_credentials():
-    print("🌐 Launching CloakBrowser Pro (headed mode via xvfb)...")
-    browser = await launch_async(
-        headless=False,               # Headed mode – works better with Turnstile
-        humanize=True,
-        args=["--no-sandbox", "--disable-dev-shm-usage"],
-        timeout=120000,
-        # The license key is automatically picked up from the environment
+def solve_turnstile_anticaptcha(sitekey, page_url):
+    """
+    Submit Turnstile challenge to anti-captcha.com and wait for solution.
+    """
+    print("🧩 Submitting Turnstile to anti-captcha.com...")
+
+    # 1. Create task
+    create_payload = {
+        "clientKey": ANTICAPTCHA_API_KEY,
+        "task": {
+            "type": "TurnstileTaskProxyless",
+            "websiteURL": page_url,
+            "websiteKey": sitekey,
+        }
+    }
+    create_resp = requests.post(
+        "https://api.anti-captcha.com/createTask",
+        json=create_payload,
+        timeout=30
     )
-    page = await browser.new_page()
+    create_data = create_resp.json()
+    if create_data.get("errorId") != 0:
+        raise Exception(f"Failed to create task: {create_data}")
+    task_id = create_data["taskId"]
+    print(f"📝 Task created, ID: {task_id}")
 
-    print("🔗 Navigating to the page...")
-    await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=120000)
+    # 2. Poll for result
+    result_payload = {
+        "clientKey": ANTICAPTCHA_API_KEY,
+        "taskId": task_id
+    }
+    for _ in range(30):  # max 30 * 3 = 90 seconds
+        time.sleep(3)
+        result_resp = requests.post(
+            "https://api.anti-captcha.com/getTaskResult",
+            json=result_payload,
+            timeout=30
+        )
+        result_data = result_resp.json()
+        if result_data.get("errorId") != 0:
+            raise Exception(f"Polling error: {result_data}")
+        if result_data.get("status") == "ready":
+            token = result_data["solution"]["token"]
+            print("✅ Turnstile solved!")
+            return token
+        # still processing
+    raise Exception("Timeout waiting for solution")
 
-    # Give extra time for Turnstile to solve
-    await page.wait_for_timeout(5000)
+async def fetch_new_credentials():
+    print("🌐 Launching browser...")
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+        page = await browser.new_page()
 
-    try:
-        await page.wait_for_selector("#accUser", timeout=60000)
-    except Exception:
-        content = await page.content()
-        print("⚠️ Page content (first 1000 chars):")
-        print(content[:1000])
-        raise Exception("Turnstile not solved – page didn't load credentials.")
+        print("🔗 Navigating to page...")
+        await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=30000)
 
-    username = await page.get_attribute("#accUser", "value")
-    password = await page.get_attribute("#accPass", "value")
-    print(f"👤 New Username: {username}")
-    print(f"🔑 New Password: {password}")
-    await browser.close()
-    return username, password
+        # Wait for Turnstile widget
+        try:
+            await page.wait_for_selector("div.cf-turnstile", timeout=30000)
+        except Exception:
+            content = await page.content()
+            print("⚠️ Page content (first 1000 chars):")
+            print(content[:1000])
+            raise Exception("Turnstile widget not found – page may be blocked.")
+
+        sitekey = await page.get_attribute("div.cf-turnstile", "data-sitekey")
+        if not sitekey:
+            # Fallback: search in page source
+            content = await page.content()
+            match = re.search(r'data-sitekey=["\']([^"\']+)["\']', content)
+            sitekey = match.group(1) if match else None
+        if not sitekey:
+            raise Exception("Could not extract sitekey")
+        print(f"🔑 Sitekey: {sitekey}")
+
+        # Solve via anti-captcha
+        token = solve_turnstile_anticaptcha(sitekey, TARGET_URL)
+
+        # Inject token
+        await page.evaluate(f"""
+            document.querySelector('input[name="cf-turnstile-response"]').value = '{token}';
+        """)
+        await page.wait_for_timeout(2000)
+        await page.reload(wait_until="domcontentloaded")
+
+        # Wait for credentials
+        try:
+            await page.wait_for_selector("#accUser", timeout=30000)
+        except Exception:
+            content = await page.content()
+            print("⚠️ Page content after injection (first 1000 chars):")
+            print(content[:1000])
+            raise Exception("Credentials not found – token may have been rejected.")
+
+        username = await page.get_attribute("#accUser", "value")
+        password = await page.get_attribute("#accPass", "value")
+        print(f"👤 New Username: {username}")
+        print(f"🔑 New Password: {password}")
+        await browser.close()
+        return username, password
 
 def update_m3u_file(username, password):
     print("📂 Connecting to GitHub...")
@@ -53,7 +127,7 @@ def update_m3u_file(username, password):
     new_lines = []
     replaced = 0
 
-    # Correct pattern for path-based URLs
+    # Matches path-based URLs: http://freeiptv.ottc.xyz:80/live/OLD_USER/OLD_PASS/file.ts
     pattern = re.compile(
         r'(http://freeiptv\.ottc\.xyz:[0-9]+/live/)\d+(/\d+/[^/\s]+)'
     )
@@ -61,8 +135,8 @@ def update_m3u_file(username, password):
     for line in lines:
         m = pattern.search(line)
         if m:
-            base = m.group(1)
-            rest = m.group(2)
+            base = m.group(1)      # "http://freeiptv.ottc.xyz:80/live/"
+            rest = m.group(2)      # "/OLD_PASS/file.ts"
             new_line = line.replace(m.group(0), f"{base}{username}{rest}")
             new_lines.append(new_line)
             replaced += 1
