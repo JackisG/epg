@@ -14,12 +14,8 @@ REPO_NAME = "JackisG/epg"
 FILE_PATH = "languages/lit.m3u"
 TARGET_URL = "https://freeiptv2023-d.ottc.xyz/index.php?action=view"
 
-# Known sitekey for this domain (hardcoded fallback)
-KNOWN_SITEKEY = "0x4AAAAAAA_Qtby-wpbozX7J"
-
 def solve_turnstile_2captcha(sitekey, page_url):
-    print("🧩 Submitting Turnstile to 2Captcha...")
-    # Submit the challenge
+    print(f"🧩 Submitting Turnstile to 2Captcha (sitekey: {sitekey})...")
     submit_payload = {
         "key": TWOCAPTCHA_API_KEY,
         "method": "turnstile",
@@ -27,31 +23,17 @@ def solve_turnstile_2captcha(sitekey, page_url):
         "pageurl": page_url,
         "json": 1,
     }
-    submit_resp = requests.post(
-        "https://2captcha.com/in.php",
-        data=submit_payload,
-        timeout=30
-    )
+    submit_resp = requests.post("https://2captcha.com/in.php", data=submit_payload, timeout=30)
     submit_data = submit_resp.json()
     if submit_data.get("status") != 1:
         raise Exception(f"Submission failed: {submit_data}")
     captcha_id = submit_data["request"]
     print(f"📝 Captcha ID: {captcha_id}")
 
-    # Poll for result
-    result_payload = {
-        "key": TWOCAPTCHA_API_KEY,
-        "action": "get",
-        "id": captcha_id,
-        "json": 1,
-    }
-    for _ in range(30):  # max 30 * 3 = 90 seconds
+    result_payload = {"key": TWOCAPTCHA_API_KEY, "action": "get", "id": captcha_id, "json": 1}
+    for _ in range(30):
         time.sleep(3)
-        result_resp = requests.get(
-            "https://2captcha.com/res.php",
-            params=result_payload,
-            timeout=30
-        )
+        result_resp = requests.get("https://2captcha.com/res.php", params=result_payload, timeout=30)
         result_data = result_resp.json()
         if result_data.get("status") == 1:
             token = result_data["request"]
@@ -75,7 +57,6 @@ async def fetch_new_credentials():
         )
         page = await context.new_page()
 
-        # Apply stealth
         await page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             delete window.__playwright__binding__;
@@ -86,58 +67,72 @@ async def fetch_new_credentials():
         print("🔗 Navigating to page...")
         await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
 
-        # Wait briefly for credentials or challenge
+        # Wait for the page to settle and maybe load the challenge
+        await page.wait_for_timeout(5000)
+
+        # Check if credentials already visible
         try:
-            await page.wait_for_selector("#accUser", timeout=15000)
+            await page.wait_for_selector("#accUser", timeout=10000)
             username = await page.get_attribute("#accUser", "value")
             password = await page.get_attribute("#accPass", "value")
             if username and password:
                 print(f"👤 Credentials found! Username: {username}")
-                print(f"🔑 Password: {password}")
                 await browser.close()
                 return username, password
         except Exception:
-            print("⏳ Credentials not loaded yet. Looking for challenge...")
-
-        # Try to find sitekey
-        sitekey = None
-        try:
-            await page.wait_for_selector("[data-sitekey]", timeout=10000)
-            sitekey = await page.get_attribute("[data-sitekey]", "data-sitekey")
-        except Exception:
             pass
 
-        if not sitekey:
-            content = await page.content()
-            match = re.search(r'data-sitekey=["\']([^"\']+)["\']', content)
-            if match:
-                sitekey = match.group(1)
+        # Extract sitekey - wait longer and try multiple selectors
+        sitekey = None
+        for attempt in range(3):  # retry up to 3 times
+            try:
+                # Try to find the Turnstile widget
+                await page.wait_for_selector("[data-sitekey]", timeout=15000)
+                sitekey = await page.get_attribute("[data-sitekey]", "data-sitekey")
+                if sitekey:
+                    break
+            except Exception:
+                # Maybe the widget is inside an iframe; try to get from page source
+                content = await page.content()
+                match = re.search(r'data-sitekey=["\']([^"\']+)["\']', content)
+                if match:
+                    sitekey = match.group(1)
+                    break
+            await page.wait_for_timeout(3000)
 
         if not sitekey:
-            print("⚠️ Could not find sitekey. Using known sitekey.")
-            sitekey = KNOWN_SITEKEY
+            # Last resort: use a known sitekey from previous runs (might be stale)
+            print("⚠️ Could not find sitekey. Using known sitekey (may be outdated).")
+            sitekey = "0x4AAAAAAA_Qtby-wpbozX7J"
 
         print(f"🔑 Using sitekey: {sitekey}")
 
         # Solve via 2Captcha
         token = solve_turnstile_2captcha(sitekey, TARGET_URL)
 
-        # Inject token and reload
+        # Inject token
         await page.evaluate(f"""
             const input = document.querySelector('input[name="cf-turnstile-response"]');
             if (input) input.value = '{token}';
+            // Also try to trigger the submit event
+            const form = input ? input.closest('form') : null;
+            if (form) {
+                form.dispatchEvent(new Event('submit', { bubbles: true }));
+            }
         """)
-        await page.wait_for_timeout(2000)
-        await page.reload(wait_until="domcontentloaded")
 
-        # Wait for credentials
+        # Wait for the challenge to disappear and credentials to appear
         try:
-            await page.wait_for_selector("#accUser", timeout=30000)
+            # Wait for the Turnstile widget to disappear (or credentials to appear)
+            await page.wait_for_selector("#accUser", timeout=60000)
         except Exception:
             content = await page.content()
-            print("⚠️ Page after injection (first 1000 chars):")
-            print(content[:1000])
-            raise Exception("Credentials not found – token may have been rejected.")
+            print("⚠️ Page after injection (full content):")
+            print(content[:2000])
+            # Also check for any error messages
+            if "The security check didn't complete successfully" in content:
+                raise Exception("Token rejected by Cloudflare")
+            raise Exception("Credentials not found after injection")
 
         username = await page.get_attribute("#accUser", "value")
         password = await page.get_attribute("#accPass", "value")
