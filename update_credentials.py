@@ -12,7 +12,7 @@ FILE_PATH = "languages/lit.m3u"
 TARGET_URL = "https://freeiptv2023-d.ottc.xyz/index.php?action=view"
 
 async def fetch_new_credentials():
-    print("🌐 Launching rebrowser-playwright (stealth, no external solver)...")
+    print("🌐 Launching rebrowser-playwright (stealth)...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=True,
@@ -24,7 +24,6 @@ async def fetch_new_credentials():
         )
         page = await context.new_page()
 
-        # Stealth init script
         await page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             delete window.__playwright__binding__;
@@ -35,15 +34,13 @@ async def fetch_new_credentials():
         print("🔗 Navigating to page...")
         await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
 
-        # Wait up to 60 seconds for the credentials to appear.
-        # rebrowser-playwright will automatically handle Turnstile.
         try:
             await page.wait_for_selector("#accUser", timeout=60000)
         except Exception:
             content = await page.content()
             print("⚠️ Page content (first 1000 chars):")
             print(content[:1000])
-            raise Exception("Credentials not found – rebrowser-playwright couldn't solve Turnstile.")
+            raise Exception("Credentials not found – Turnstile not solved.")
 
         username = await page.get_attribute("#accUser", "value")
         password = await page.get_attribute("#accPass", "value")
@@ -52,4 +49,57 @@ async def fetch_new_credentials():
         await browser.close()
         return username, password
 
-# (update_m3u_file and main are the same as before – keep them)
+def update_m3u_file(username, password):
+    print("📂 Connecting to GitHub...")
+    g = Github(GITHUB_TOKEN)
+    repo = g.get_repo(REPO_NAME)
+
+    contents = repo.get_contents(FILE_PATH)
+    current = contents.decoded_content.decode("utf-8")
+    lines = current.splitlines()
+    new_lines = []
+    replaced = 0
+
+    # ✅ CORRECTED: matches path-based URLs like:
+    # http://freeiptv.ottc.xyz:80/live/OLD_USER/OLD_PASS/47287.ts
+    pattern = re.compile(
+        r'(http://freeiptv\.ottc\.xyz:[0-9]+/live/)\d+(/\d+/[^/\s]+)'
+    )
+
+    for line in lines:
+        m = pattern.search(line)
+        if m:
+            base = m.group(1)      # "http://freeiptv.ottc.xyz:80/live/"
+            rest = m.group(2)      # "/OLD_PASS/47287.ts"
+            new_line = line.replace(m.group(0), f"{base}{username}{rest}")
+            new_lines.append(new_line)
+            replaced += 1
+            print(f"🔄 Updated: {line[:80]}...")
+        else:
+            new_lines.append(line)
+
+    if replaced == 0:
+        print("⚠️ No 'freeiptv.ottc.xyz' URLs found – nothing changed.")
+        print("💡 Check that your lit.m3u contains URLs like: http://freeiptv.ottc.xyz:80/live/XXX/YYY/ZZZ.ts")
+        return
+
+    repo.update_file(
+        path=FILE_PATH,
+        message=f"Auto-update credentials: username={username}",
+        content="\n".join(new_lines),
+        sha=contents.sha,
+        branch="master"
+    )
+    print(f"✅ Updated {replaced} URL(s).")
+
+def main():
+    try:
+        user, pwd = asyncio.run(fetch_new_credentials())
+        update_m3u_file(user, pwd)
+        print("🎉 Done!")
+    except Exception as e:
+        print(f"❌ ERROR: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
