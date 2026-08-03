@@ -65,8 +65,7 @@ async def fetch_new_credentials():
     print("🔗 Navigating to page (domcontentloaded)...")
     await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
 
-    # Wait for either the challenge or the credentials
-    # Let CloakBrowser try to solve automatically for a while
+    # Let CloakBrowser try to solve automatically
     await page.wait_for_timeout(10000)
 
     # Check if credentials already loaded (Turnstile solved by CloakBrowser)
@@ -82,7 +81,6 @@ async def fetch_new_credentials():
     print("⏳ Turnstile not auto-solved. Extracting sitekey for manual solve...")
     sitekey = None
     try:
-        # Wait for the Turnstile iframe to appear
         await page.wait_for_selector("[data-sitekey]", timeout=30000)
         sitekey = await page.get_attribute("[data-sitekey]", "data-sitekey")
     except Exception:
@@ -99,10 +97,8 @@ async def fetch_new_credentials():
 
     print(f"🔑 Sitekey: {sitekey}")
 
-    # Solve via anti-captcha
     token = solve_turnstile_anticaptcha(sitekey, TARGET_URL)
 
-    # Inject token
     await page.evaluate(f"""
         const input = document.querySelector('input[name="cf-turnstile-response"]');
         if (input) input.value = '{token}';
@@ -110,7 +106,6 @@ async def fetch_new_credentials():
     await page.wait_for_timeout(2000)
     await page.reload(wait_until="domcontentloaded")
 
-    # Wait for credentials
     try:
         await page.wait_for_selector("#accUser", timeout=30000)
     except Exception:
@@ -126,4 +121,54 @@ async def fetch_new_credentials():
     await browser.close()
     return username, password
 
-# update_m3u_file and main are unchanged (same as previous version)
+def update_m3u_file(username, password):
+    print("📂 Connecting to GitHub...")
+    g = Github(GITHUB_TOKEN)
+    repo = g.get_repo(REPO_NAME)
+    contents = repo.get_contents(FILE_PATH)
+    current = contents.decoded_content.decode("utf-8")
+    lines = current.splitlines()
+    new_lines = []
+    replaced = 0
+
+    # Matches: http://freeiptv.ottc.xyz:80/live/OLD_USER/OLD_PASS/file.ts
+    pattern = re.compile(
+        r'(http://freeiptv\.ottc\.xyz:[0-9]+/live/)\d+(/\d+/[^/\s]+)'
+    )
+
+    for line in lines:
+        m = pattern.search(line)
+        if m:
+            base = m.group(1)
+            rest = m.group(2)
+            new_line = line.replace(m.group(0), f"{base}{username}{rest}")
+            new_lines.append(new_line)
+            replaced += 1
+            print(f"🔄 Updated: {line[:80]}...")
+        else:
+            new_lines.append(line)
+
+    if replaced == 0:
+        print("⚠️ No 'freeiptv.ottc.xyz' URLs found – nothing changed.")
+        return
+
+    repo.update_file(
+        path=FILE_PATH,
+        message=f"Auto-update credentials: username={username}",
+        content="\n".join(new_lines),
+        sha=contents.sha,
+        branch="master"
+    )
+    print(f"✅ Updated {replaced} URL(s).")
+
+def main():
+    try:
+        user, pwd = asyncio.run(fetch_new_credentials())
+        update_m3u_file(user, pwd)
+        print("🎉 Done!")
+    except Exception as e:
+        print(f"❌ ERROR: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
