@@ -17,37 +17,37 @@ def solve_turnstile(sitekey: str, page_url: str) -> str:
     """Solve Cloudflare Turnstile using 2Captcha and return the token."""
     solver = TwoCaptcha(TWO_CAPTCHA_API_KEY)
     try:
-        result = solver.turnstile(sitekey=sitekey, url=page_url)
+        # Sometimes adding a timeout helps
+        result = solver.turnstile(sitekey=sitekey, url=page_url, timeout=120)
         return result["code"]
     except Exception as e:
         print(f"2Captcha error: {e}")
         raise
 
 
-def follow_redirects(session, response, max_redirects=10):
-    """Manually follow redirects until a non-redirect response is received."""
-    redirect_count = 0
-    while response.status_code in (301, 302, 303, 307, 308) and redirect_count < max_redirects:
-        location = response.headers.get("Location")
-        if not location:
-            break
-        if not location.startswith(("http://", "https://")):
-            location = requests.compat.urljoin(BASE_URL, location)
-        print(f"Following redirect to {location}")
-        response = session.get(location, allow_redirects=False)
-        redirect_count += 1
-    return response
-
-
 def fetch_credentials() -> tuple[str, str]:
     """Fetch new username and password from the website."""
     session = requests.Session()
-    session.headers.update({"User-Agent": USER_AGENT})
+    session.headers.update({
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Cache-Control": "max-age=0",
+    })
 
-    # 1. Get index page to extract sitekey
+    # 1. Get index page to extract sitekey and any session cookies
     index_url = f"{BASE_URL}/index.php"
     resp = session.get(index_url)
     resp.raise_for_status()
+    print("Initial GET status:", resp.status_code)
 
     soup = BeautifulSoup(resp.text, "html.parser")
     script_tag = soup.find("script", string=re.compile(r"turnstile\.render"))
@@ -61,26 +61,45 @@ def fetch_credentials() -> tuple[str, str]:
 
     # 2. Solve Turnstile challenge
     token = solve_turnstile(sitekey, index_url)
-    print(f"Received Turnstile token: {token[:20]}...")
+    print(f"Received Turnstile token: {token[:30]}...")
 
-    # 3. Submit the form with the token (do not auto-follow redirects)
+    # 3. Submit the form with the token
     data = {"cf-turnstile-response": token}
-    post_resp = session.post(index_url, data=data, allow_redirects=False)
-    print(f"POST response status: {post_resp.status_code}")
+    # Use proper headers for POST
+    post_headers = {
+        "Origin": BASE_URL,
+        "Referer": index_url,
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    post_resp = session.post(index_url, data=data, headers=post_headers, allow_redirects=True, timeout=30)
+    print(f"POST final URL: {post_resp.url}")
+    print(f"POST final status: {post_resp.status_code}")
 
-    # 4. Manually follow redirects
-    final_resp = follow_redirects(session, post_resp)
-    print(f"Final URL: {final_resp.url}")
-    print(f"Final status: {final_resp.status_code}")
-
-    # 5. Check if we got the credentials page
-    if "IPTV account information" not in final_resp.text:
+    # 4. Check if we got the credentials page
+    if "IPTV account information" in post_resp.text:
+        # success
+        pass
+    else:
+        # Try to find any error message
+        error_msg = None
+        # Look for common error patterns
+        if "invalid" in post_resp.text.lower():
+            error_msg = "Invalid token error"
+        elif "try again" in post_resp.text.lower():
+            error_msg = "Try again message"
+        else:
+            # Maybe the page contains the form again; check for the presence of the captcha
+            if "turnstile.render" in post_resp.text:
+                error_msg = "Captcha still present, token likely rejected"
+        if error_msg:
+            print(f"Error detected: {error_msg}")
         # Dump a snippet for debugging
-        snippet = final_resp.text[:500]
-        print("Response snippet:", snippet)
+        snippet = post_resp.text[:800]
+        print("Response snippet:")
+        print(snippet)
         raise RuntimeError("Failed to reach credentials page")
 
-    soup = BeautifulSoup(final_resp.text, "html.parser")
+    soup = BeautifulSoup(post_resp.text, "html.parser")
     user_input = soup.find("input", {"id": "accUser"})
     pass_input = soup.find("input", {"id": "accPass"})
     if not user_input or not pass_input:
@@ -100,7 +119,6 @@ def update_m3u_file(file_path: str, new_user: str, new_pass: str) -> None:
     with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # Find existing credentials from any URL pattern in the file
     pattern = r"http://freeiptv\.ottc\.xyz:80/live/(\d+)/(\d+)/"
     matches = re.findall(pattern, content)
     if not matches:
@@ -109,7 +127,6 @@ def update_m3u_file(file_path: str, new_user: str, new_pass: str) -> None:
     old_user, old_pass = matches[0]
     print(f"Old credentials found: username={old_user}, password={old_pass}")
 
-    # Replace all occurrences with the new ones
     new_content = re.sub(
         pattern,
         f"http://freeiptv.ottc.xyz:80/live/{new_user}/{new_pass}/",
