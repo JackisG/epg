@@ -12,7 +12,6 @@ TWO_CAPTCHA_API_KEY = os.environ.get("TWO_CAPTCHA_API_KEY")
 if not TWO_CAPTCHA_API_KEY:
     raise RuntimeError("TWO_CAPTCHA_API_KEY environment variable not set")
 
-# Known sitekey from the provided HTML
 SITEKEY = "0x4AAAAAAA_Qtby-wpbozX7J"
 
 
@@ -20,8 +19,13 @@ def solve_turnstile(sitekey: str, page_url: str) -> str:
     """Solve Cloudflare Turnstile using 2Captcha and return the token."""
     solver = TwoCaptcha(TWO_CAPTCHA_API_KEY)
     try:
-        # Optionally set action if needed (site doesn't specify, but we can try)
-        result = solver.turnstile(sitekey=sitekey, url=page_url, timeout=120)
+        # Some sites require an action, try common ones
+        result = solver.turnstile(
+            sitekey=sitekey,
+            url=page_url,
+            action="submit",   # try a common action
+            timeout=120
+        )
         return result["code"]
     except Exception as e:
         print(f"2Captcha error: {e}")
@@ -31,11 +35,12 @@ def solve_turnstile(sitekey: str, page_url: str) -> str:
 def fetch_credentials() -> tuple[str, str]:
     """Fetch new username and password from the website."""
     session = requests.Session()
+    # Avoid Brotli compression for easier debugging (requests handles gzip/deflate)
     session.headers.update({
         "User-Agent": USER_AGENT,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
+        "Accept-Encoding": "gzip, deflate",  # no br
         "DNT": "1",
         "Connection": "keep-alive",
         "Upgrade-Insecure-Requests": "1",
@@ -52,13 +57,13 @@ def fetch_credentials() -> tuple[str, str]:
     resp.raise_for_status()
     print("Initial GET status:", resp.status_code)
 
-    # 2. Solve Turnstile challenge (use hardcoded sitekey)
+    # 2. Solve Turnstile challenge
     print(f"Using sitekey: {SITEKEY}")
     token = solve_turnstile(SITEKEY, index_url)
     print(f"Received Turnstile token: {token[:30]}...")
 
-    # Wait a moment to ensure token is valid
-    time.sleep(2)
+    # Small delay to allow token to propagate
+    time.sleep(3)
 
     # 3. Submit the form with the token
     data = {"cf-turnstile-response": token}
@@ -67,7 +72,8 @@ def fetch_credentials() -> tuple[str, str]:
         "Referer": index_url,
         "Content-Type": "application/x-www-form-urlencoded",
     }
-    post_resp = session.post(index_url, data=data, headers=post_headers, allow_redirects=True, timeout=30)
+    # Allow redirects automatically
+    post_resp = session.post(index_url, data=data, headers=post_headers, timeout=30)
     print(f"POST final URL: {post_resp.url}")
     print(f"POST final status: {post_resp.status_code}")
 
@@ -76,7 +82,7 @@ def fetch_credentials() -> tuple[str, str]:
         # Success
         pass
     else:
-        # Try to find error messages
+        # Try to find error messages in the page
         error_msg = None
         if "invalid" in post_resp.text.lower():
             error_msg = "Invalid token error"
