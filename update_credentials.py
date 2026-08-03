@@ -24,7 +24,6 @@ def solve_turnstile(page_url: str) -> str:
         "sitekey": SITEKEY,
         "pageurl": page_url,
         "json": 1,
-        # Optional: "action": "submit", "data": "cdata..." 
     }
     resp = requests.post(create_url, data=data)
     resp_json = resp.json()
@@ -41,7 +40,7 @@ def solve_turnstile(page_url: str) -> str:
         "id": captcha_id,
         "json": 1,
     }
-    max_wait = 120  # seconds
+    max_wait = 120
     start = time.time()
     while time.time() - start < max_wait:
         poll_resp = requests.get(result_url, params=poll_data)
@@ -65,29 +64,36 @@ def fetch_credentials() -> tuple[str, str]:
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
         page = context.new_page()
-        stealth_sync(page)  # hide automation
+        stealth_sync(page)
 
-        # 1. Go to the page
+        # Go to the page
         page.goto(BASE_URL + "/index.php")
         page.wait_for_load_state("networkidle")
 
-        # 2. Solve the challenge
+        # Solve the challenge
         token = solve_turnstile(BASE_URL + "/index.php")
         print(f"Token: {token[:30]}...")
 
-        # 3. Fill the hidden input and submit
-        page.wait_for_selector("input[name='cf-turnstile-response']", timeout=5000)
-        page.fill("input[name='cf-turnstile-response']", token)
+        # Set the hidden input value using JavaScript
+        page.evaluate(f"""
+            document.querySelector("input[name='cf-turnstile-response']").value = "{token}";
+        """)
+
+        # Submit the form
         page.click("input[type='submit']")
 
-        # 4. Wait for redirect to credentials page
+        # Wait for the credentials page to load
         try:
             page.wait_for_url("**/index.php?action=view", timeout=15000)
         except:
             page.wait_for_load_state("networkidle", timeout=5000)
-        time.sleep(2)  # ensure content loaded
+        time.sleep(2)  # allow any dynamic content
 
-        # 5. Extract credentials
+        # Verify we are on the right page
+        if "IPTV account information" not in page.content():
+            raise RuntimeError("Token likely rejected - captcha page returned")
+
+        # Extract credentials
         html = page.content()
         soup = BeautifulSoup(html, "html.parser")
         user_input = soup.find("input", {"id": "accUser"})
