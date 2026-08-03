@@ -3,128 +3,121 @@ import re
 import time
 import requests
 from bs4 import BeautifulSoup
+from twocaptcha import TwoCaptcha
 
-BASE_URL = "https://freeiptv2023-d.ottc.xyz/index.php"
-M3U_FILE = "languages/lit.m3u"
+BASE_URL = "https://freeiptv2023-d.ottc.xyz"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+TWO_CAPTCHA_API_KEY = os.environ.get("TWO_CAPTCHA_API_KEY")
 
-API_KEY = os.environ["TWOCAPTCHA_API_KEY"]
-
-
-session = requests.Session()
-session.headers.update({
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 Chrome/138 Safari/537.36"
-    )
-})
+if not TWO_CAPTCHA_API_KEY:
+    raise RuntimeError("TWO_CAPTCHA_API_KEY environment variable not set")
 
 
-def get_sitekey():
-    r = session.get(BASE_URL, timeout=30)
-    r.raise_for_status()
-
-    m = re.search(r'sitekey:\s*"([^"]+)"', r.text)
-    if not m:
-        raise RuntimeError("Unable to locate Turnstile sitekey")
-
-    return m.group(1)
-
-
-def solve_turnstile(sitekey):
-    print("Submitting captcha...")
-
-    r = requests.post(
-        "https://2captcha.com/in.php",
-        data={
-            "key": API_KEY,
-            "method": "turnstile",
-            "sitekey": sitekey,
-            "pageurl": BASE_URL,
-            "json": 1,
-        },
-        timeout=30,
-    ).json()
-
-    if r["status"] != 1:
-        raise RuntimeError(r)
-
-    captcha_id = r["request"]
-
-    print("Waiting for solution...")
-
-    while True:
-        time.sleep(5)
-
-        r = requests.get(
-            "https://2captcha.com/res.php",
-            params={
-                "key": API_KEY,
-                "action": "get",
-                "id": captcha_id,
-                "json": 1,
-            },
-            timeout=30,
-        ).json()
-
-        if r["status"] == 1:
-            return r["request"]
-
-        if r["request"] != "CAPCHA_NOT_READY":
-            raise RuntimeError(r)
+def solve_turnstile(sitekey: str, page_url: str) -> str:
+    """Solve Cloudflare Turnstile using 2Captcha and return the token."""
+    solver = TwoCaptcha(TWO_CAPTCHA_API_KEY)
+    try:
+        result = solver.turnstile(sitekey=sitekey, url=page_url)
+        return result["code"]
+    except Exception as e:
+        print(f"2Captcha error: {e}")
+        raise
 
 
-def create_account(token):
-    r = session.post(
-        BASE_URL,
-        data={
-            "cf-turnstile-response": token
-        },
-        allow_redirects=True,
-        timeout=60,
-    )
+def fetch_credentials() -> tuple[str, str]:
+    """Fetch new username and password from the website."""
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT})
 
-    r.raise_for_status()
+    # 1. Get index page to extract sitekey
+    index_url = f"{BASE_URL}/index.php"
+    resp = session.get(index_url)
+    resp.raise_for_status()
 
-    soup = BeautifulSoup(r.text, "lxml")
+    soup = BeautifulSoup(resp.text, "html.parser")
+    script_tag = soup.find("script", string=re.compile(r"turnstile\.render"))
+    if not script_tag:
+        raise RuntimeError("Could not find turnstile.render script")
+    match = re.search(r'sitekey:\s*"([^"]+)"', script_tag.string)
+    if not match:
+        raise RuntimeError("Could not extract sitekey")
+    sitekey = match.group(1)
+    print(f"Extracted sitekey: {sitekey}")
 
-    username = soup.select_one("#accUser")["value"]
-    password = soup.select_one("#accPass")["value"]
+    # 2. Solve Turnstile challenge
+    token = solve_turnstile(sitekey, index_url)
+    print(f"Received Turnstile token: {token[:20]}...")
 
+    # 3. Submit the form with the token
+    data = {"cf-turnstile-response": token}
+    post_resp = session.post(index_url, data=data, allow_redirects=True)
+
+    # 4. Follow any remaining redirects manually (just in case)
+    while post_resp.status_code in (301, 302, 303, 307, 308):
+        location = post_resp.headers.get("Location")
+        if not location:
+            break
+        if not location.startswith("http"):
+            location = requests.compat.urljoin(BASE_URL, location)
+        post_resp = session.get(location, allow_redirects=True)
+
+    # 5. Verify we are on the credentials page
+    if "IPTV account information" not in post_resp.text:
+        raise RuntimeError("Failed to reach credentials page")
+
+    soup = BeautifulSoup(post_resp.text, "html.parser")
+    user_input = soup.find("input", {"id": "accUser"})
+    pass_input = soup.find("input", {"id": "accPass"})
+    if not user_input or not pass_input:
+        raise RuntimeError("Credentials fields not found on page")
+
+    username = user_input.get("value", "").strip()
+    password = pass_input.get("value", "").strip()
+    if not username or not password:
+        raise RuntimeError("Username or password is empty")
+
+    print(f"New credentials: username={username}, password={password}")
     return username, password
 
 
-def update_playlist(username, password):
-    with open(M3U_FILE, "r", encoding="utf-8") as f:
+def update_m3u_file(file_path: str, new_user: str, new_pass: str) -> None:
+    """Replace all occurrences of old IPTV credentials in lit.m3u with the new ones."""
+    with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
 
+    # Find existing credentials from any URL pattern in the file
+    pattern = r"http://freeiptv\.ottc\.xyz:80/live/(\d+)/(\d+)/"
+    matches = re.findall(pattern, content)
+    if not matches:
+        raise RuntimeError("No existing credentials found in lit.m3u")
+
+    old_user, old_pass = matches[0]
+    print(f"Old credentials found: username={old_user}, password={old_pass}")
+
+    # Replace all occurrences with the new ones
     new_content = re.sub(
-        r"http://freeiptv\.ottc\.xyz:80/live/\d+/\d+/",
-        f"http://freeiptv.ottc.xyz:80/live/{username}/{password}/",
+        pattern,
+        f"http://freeiptv.ottc.xyz:80/live/{new_user}/{new_pass}/",
         content,
     )
-
-    if new_content == content:
-        print("No changes")
-        return False
-
-    with open(M3U_FILE, "w", encoding="utf-8") as f:
+    with open(file_path, "w", encoding="utf-8") as f:
         f.write(new_content)
 
-    print("Playlist updated")
-    return True
+    print("lit.m3u updated successfully")
 
 
 def main():
-    sitekey = get_sitekey()
+    try:
+        username, password = fetch_credentials()
+        # The m3u file is expected to be at languages/lit.m3u relative to repo root
+        m3u_path = "languages/lit.m3u"
+        if not os.path.isfile(m3u_path):
+            raise FileNotFoundError(f"Could not find {m3u_path}")
 
-    token = solve_turnstile(sitekey)
-
-    username, password = create_account(token)
-
-    print(username)
-    print(password)
-
-    update_playlist(username, password)
+        update_m3u_file(m3u_path, username, password)
+    except Exception as e:
+        print(f"Script failed: {e}")
+        raise
 
 
 if __name__ == "__main__":
