@@ -4,7 +4,6 @@ import re
 import sys
 import time
 import asyncio
-import json
 import requests
 from github import Github
 from playwright.async_api import async_playwright
@@ -16,12 +15,7 @@ FILE_PATH = "languages/lit.m3u"
 TARGET_URL = "https://freeiptv2023-d.ottc.xyz/index.php?action=view"
 
 def solve_turnstile_anticaptcha(sitekey, page_url):
-    """
-    Submit Turnstile challenge to anti-captcha.com and wait for solution.
-    """
     print("🧩 Submitting Turnstile to anti-captcha.com...")
-
-    # 1. Create task
     create_payload = {
         "clientKey": ANTICAPTCHA_API_KEY,
         "task": {
@@ -37,16 +31,12 @@ def solve_turnstile_anticaptcha(sitekey, page_url):
     )
     create_data = create_resp.json()
     if create_data.get("errorId") != 0:
-        raise Exception(f"Failed to create task: {create_data}")
+        raise Exception(f"Create task failed: {create_data}")
     task_id = create_data["taskId"]
     print(f"📝 Task created, ID: {task_id}")
 
-    # 2. Poll for result
-    result_payload = {
-        "clientKey": ANTICAPTCHA_API_KEY,
-        "taskId": task_id
-    }
-    for _ in range(30):  # max 30 * 3 = 90 seconds
+    result_payload = {"clientKey": ANTICAPTCHA_API_KEY, "taskId": task_id}
+    for _ in range(30):
         time.sleep(3)
         result_resp = requests.post(
             "https://api.anti-captcha.com/getTaskResult",
@@ -60,35 +50,44 @@ def solve_turnstile_anticaptcha(sitekey, page_url):
             token = result_data["solution"]["token"]
             print("✅ Turnstile solved!")
             return token
-        # still processing
     raise Exception("Timeout waiting for solution")
 
 async def fetch_new_credentials():
-    print("🌐 Launching browser...")
+    print("🌐 Launching browser with networkidle...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
         page = await browser.new_page()
 
-        print("🔗 Navigating to page...")
-        await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=30000)
-
-        # Wait for Turnstile widget
+        print("🔗 Navigating to page (wait until network idle)...")
         try:
-            await page.wait_for_selector("div.cf-turnstile", timeout=30000)
+            await page.goto(TARGET_URL, wait_until="networkidle", timeout=60000)
         except Exception:
-            content = await page.content()
-            print("⚠️ Page content (first 1000 chars):")
-            print(content[:1000])
-            raise Exception("Turnstile widget not found – page may be blocked.")
+            # Even if timeout, we might still have the page partially loaded
+            pass
 
-        sitekey = await page.get_attribute("div.cf-turnstile", "data-sitekey")
-        if not sitekey:
-            # Fallback: search in page source
+        # Wait a bit for dynamic content
+        await page.wait_for_timeout(5000)
+
+        # Try to find the Turnstile widget by data-sitekey attribute
+        sitekey = None
+        try:
+            # Wait for any element with data-sitekey
+            await page.wait_for_selector("[data-sitekey]", timeout=30000)
+            sitekey = await page.get_attribute("[data-sitekey]", "data-sitekey")
+        except Exception:
+            # Fallback: search in raw HTML
             content = await page.content()
             match = re.search(r'data-sitekey=["\']([^"\']+)["\']', content)
-            sitekey = match.group(1) if match else None
+            if match:
+                sitekey = match.group(1)
+
         if not sitekey:
-            raise Exception("Could not extract sitekey")
+            # Dump full HTML for debugging
+            content = await page.content()
+            print("⚠️ Full page content (first 2000 chars):")
+            print(content[:2000])
+            raise Exception("Could not find Turnstile sitekey. Page may be blocked or using a different challenge.")
+
         print(f"🔑 Sitekey: {sitekey}")
 
         # Solve via anti-captcha
@@ -96,17 +95,18 @@ async def fetch_new_credentials():
 
         # Inject token
         await page.evaluate(f"""
-            document.querySelector('input[name="cf-turnstile-response"]').value = '{token}';
+            const input = document.querySelector('input[name="cf-turnstile-response"]');
+            if (input) input.value = '{token}';
         """)
         await page.wait_for_timeout(2000)
-        await page.reload(wait_until="domcontentloaded")
+        await page.reload(wait_until="networkidle")
 
         # Wait for credentials
         try:
             await page.wait_for_selector("#accUser", timeout=30000)
         except Exception:
             content = await page.content()
-            print("⚠️ Page content after injection (first 1000 chars):")
+            print("⚠️ Page after injection (first 1000 chars):")
             print(content[:1000])
             raise Exception("Credentials not found – token may have been rejected.")
 
@@ -127,7 +127,6 @@ def update_m3u_file(username, password):
     new_lines = []
     replaced = 0
 
-    # Matches path-based URLs: http://freeiptv.ottc.xyz:80/live/OLD_USER/OLD_PASS/file.ts
     pattern = re.compile(
         r'(http://freeiptv\.ottc\.xyz:[0-9]+/live/)\d+(/\d+/[^/\s]+)'
     )
@@ -135,8 +134,8 @@ def update_m3u_file(username, password):
     for line in lines:
         m = pattern.search(line)
         if m:
-            base = m.group(1)      # "http://freeiptv.ottc.xyz:80/live/"
-            rest = m.group(2)      # "/OLD_PASS/file.ts"
+            base = m.group(1)
+            rest = m.group(2)
             new_line = line.replace(m.group(0), f"{base}{username}{rest}")
             new_lines.append(new_line)
             replaced += 1
