@@ -1,170 +1,157 @@
 import os
 import re
 import time
-import random
-import string
+import subprocess
 import requests
+import pytz
+from datetime import datetime
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
-from playwright_stealth import stealth_sync
 
-BASE_URL = "https://freeiptv2023-d.ottc.xyz"
-TWO_CAPTCHA_API_KEY = os.environ.get("TWO_CAPTCHA_API_KEY")
-if not TWO_CAPTCHA_API_KEY:
-    raise RuntimeError("TWO_CAPTCHA_API_KEY not set")
+def check_time():
+    """Ensure the script only runs exactly at 5 AM Lithuanian time."""
+    if os.getenv('GITHUB_ACTIONS') == 'true':
+        vilnius_tz = pytz.timezone('Europe/Vilnius')
+        now = datetime.now(vilnius_tz)
+        if now.hour != 5:
+            print(f"Current time in Vilnius is {now.hour}:{now.minute}. Skipping execution until 5 AM.")
+            exit(0)
 
-SITEKEY = "0x4AAAAAAA_Qtby-wpbozX7J"
-
-
-def solve_turnstile(page_url: str, action: str = None, cdata: str = None, method: str = "turnstile") -> str:
-    """Solve Turnstile with optional action and cdata."""
-    create_url = "https://2captcha.com/in.php"
-    data = {
-        "key": TWO_CAPTCHA_API_KEY,
-        "method": method,
-        "sitekey": SITEKEY,
-        "pageurl": page_url,
-        "json": 1,
+def solve_turnstile(api_key):
+    print("Solving Turnstile captcha with 2captcha...")
+    payload = {
+        "clientKey": api_key,
+        "task": {
+            "type": "TurnstileTaskProxyless",
+            "websiteURL": "https://freeiptv2023-d.ottc.xyz/index.php",
+            "websiteKey": "0x4AAAAAAA_Qtby-wpbozX7J"
+        }
     }
-    if action:
-        data["action"] = action
-    if cdata:
-        data["data"] = cdata
-    resp = requests.post(create_url, data=data)
-    resp_json = resp.json()
-    if resp_json.get("status") != 1:
-        raise RuntimeError(f"Failed to create captcha task: {resp_json}")
-    captcha_id = resp_json["request"]
-    print(f"Captcha ID: {captcha_id} (method={method}, action={action}, cdata={cdata})")
-
-    result_url = "https://2captcha.com/res.php"
-    poll_data = {
-        "key": TWO_CAPTCHA_API_KEY,
-        "action": "get",
-        "id": captcha_id,
-        "json": 1,
-    }
-    max_wait = 180
-    start = time.time()
-    while time.time() - start < max_wait:
-        poll_resp = requests.get(result_url, params=poll_data)
-        poll_json = poll_resp.json()
-        if poll_json.get("status") == 1:
-            token = poll_json.get("request")
-            if token:
-                return token
-        elif poll_json.get("request") == "CAPCHA_NOT_READY":
-            time.sleep(4)
+    res = requests.post("https://api.2captcha.com/createTask", json=payload, timeout=30).json()
+    if "errorId" in res and res["errorId"] != 0:
+        raise Exception(f"2captcha createTask error: {res}")
+    
+    task_id = res["taskId"]
+    
+    while True:
+        time.sleep(5)
+        res = requests.post("https://api.2captcha.com/getTaskResult", json={
+            "clientKey": api_key,
+            "taskId": task_id
+        }, timeout=30).json()
+        
+        if res.get("status") == "processing":
             continue
+        elif res.get("status") == "ready":
+            print("Captcha solved successfully.")
+            return res["solution"]["token"]
         else:
-            raise RuntimeError(f"Error solving captcha: {poll_json}")
-    raise RuntimeError("Timed out waiting for captcha solution")
+            raise Exception(f"2captcha getTaskResult error: {res}")
 
+def get_credentials(api_key):
+    token = solve_turnstile(api_key)
+    session = requests.Session()
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+        "Referer": "https://freeiptv2023-d.ottc.xyz/index.php"
+    }
+    
+    # Get initial page to establish session/cookies
+    session.get("https://freeiptv2023-d.ottc.xyz/index.php", headers=headers, timeout=30)
+    
+    # Submit the form with the Turnstile token
+    data = {
+        "cf-turnstile-response": token
+    }
+    
+    print("Submitting form...")
+    resp = session.post("https://freeiptv2023-d.ottc.xyz/index.php", data=data, headers=headers, timeout=30)
+    html = resp.text
+    
+    # Extract credentials
+    # Look for M3U link pattern: .../live/USER/PASS/... or ...?username=USER&password=PASS...
+    m3u_match = re.search(r'freeiptv\.ottc\.xyz[^"\'>\s]*?(?:username=|/live/)(\d+)[^"\'>\s]*?(?:password=|/)(\d+)', html)
+    if m3u_match:
+        return m3u_match.group(1), m3u_match.group(2)
+    
+    # Fallback: Look for 10-14 digit numbers in the text
+    soup = BeautifulSoup(html, 'html.parser')
+    text = soup.get_text()
+    nums = re.findall(r'\b\d{10,14}\b', text)
+    if len(nums) >= 2:
+        return nums[0], nums[1]
+        
+    raise Exception("Could not extract credentials from the response page.")
 
-def fetch_credentials(max_retries=5) -> tuple[str, str]:
-    attempts = 0
-    # List of combinations to try
-    combos = [
-        {"method": "turnstile", "action": None, "cdata": None},
-        {"method": "turnstile", "action": "submit", "cdata": ''.join(random.choices(string.ascii_letters + string.digits, k=12))},
-        {"method": "turnstile", "action": "login", "cdata": ''.join(random.choices(string.ascii_letters + string.digits, k=12))},
-        {"method": "turnstile_managed", "action": None, "cdata": None},
-    ]
-    while attempts < max_retries:
-        combo = combos[attempts % len(combos)]
-        print(f"\nAttempt {attempts+1}/{max_retries} with {combo}")
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                locale="en-US",
-                timezone_id="Europe/Vilnius"
-            )
-            page = context.new_page()
-            stealth_sync(page)
-
-            # Go to page
-            page.goto(BASE_URL + "/index.php")
-            page.wait_for_load_state("networkidle")
-
-            # Solve captcha with this combo
-            token = solve_turnstile(
-                BASE_URL + "/index.php",
-                action=combo["action"],
-                cdata=combo["cdata"],
-                method=combo["method"]
-            )
-            print(f"Token: {token[:30]}...")
-
-            # Inject token and enable button
-            page.evaluate(f"""
-                document.querySelector("input[name='cf-turnstile-response']").value = "{token}";
-                document.querySelector("#create-btn").disabled = false;
-                document.querySelector("#please-wait").style.display = "none";
-            """)
-
-            # Submit
-            page.click("input[type='submit']")
-            try:
-                page.wait_for_url("**/index.php?action=view", timeout=15000)
-            except:
-                page.wait_for_load_state("networkidle", timeout=5000)
-            time.sleep(2)
-
-            # Check success
-            content = page.content()
-            if "IPTV account information" in content:
-                # success
-                break
-            else:
-                print("Token rejected, retrying...")
-                snippet = content[:500]
-                print("Snippet:", snippet)
-                browser.close()
-                attempts += 1
-                continue
-
-        if attempts >= max_retries:
-            raise RuntimeError("All attempts failed")
-
-    # Extract credentials (success case)
-    html = page.content()
-    soup = BeautifulSoup(html, "html.parser")
-    user_input = soup.find("input", {"id": "accUser"})
-    pass_input = soup.find("input", {"id": "accPass"})
-    if not user_input or not pass_input:
-        raise RuntimeError("Credentials not found")
-    username = user_input.get("value", "").strip()
-    password = pass_input.get("value", "").strip()
-    if not username or not password:
-        raise RuntimeError("Empty credentials")
-    print(f"Success: {username} / {password}")
-    browser.close()
-    return username, password
-
-
-def update_m3u(file_path: str, new_user: str, new_pass: str) -> None:
-    with open(file_path, "r", encoding="utf-8") as f:
-        content = f.read()
-    pattern = r"http://freeiptv\.ottc\.xyz:80/live/(\d+)/(\d+)/"
-    matches = re.findall(pattern, content)
-    if not matches:
-        raise RuntimeError("No existing credentials found")
-    old_user, old_pass = matches[0]
-    print(f"Old: {old_user} / {old_pass}")
-    new_content = re.sub(pattern, f"http://freeiptv.ottc.xyz:80/live/{new_user}/{new_pass}/", content)
-    with open(file_path, "w", encoding="utf-8") as f:
-        f.write(new_content)
-    print("lit.m3u updated.")
-
-
-def main():
-    user, passw = fetch_credentials()
+def update_m3u_file(username, password):
+    print(f"New credentials - Username: {username}, Password: {password}")
+    
     m3u_path = "languages/lit.m3u"
-    if not os.path.isfile(m3u_path):
-        raise FileNotFoundError(m3u_path)
-    update_m3u(m3u_path, user, passw)
+    if not os.path.exists(m3u_path):
+        raise FileNotFoundError(f"{m3u_path} not found in the repository.")
+        
+    with open(m3u_path, "r", encoding="utf-8") as f:
+        content = f.read()
+        
+    # Find old credentials
+    old_match = re.search(r'freeiptv\.ottc\.xyz[^"\'>\s]*?(?:username=|/live/)(\d+)[^"\'>\s]*?(?:password=|/)(\d+)', content)
+    
+    if old_match:
+        old_user = old_match.group(1)
+        old_pass = old_match.group(2)
+        print(f"Replacing old credentials - Username: {old_user}, Password: {old_pass}")
+        content = content.replace(old_user, username)
+        content = content.replace(old_pass, password)
+    else:
+        # Fallback: find any two 10-14 digit numbers in lines containing freeiptv.ottc.xyz
+        lines = content.split('\n')
+        for line in lines:
+            if 'freeiptv.ottc.xyz' in line:
+                nums = re.findall(r'\b\d{10,14}\b', line)
+                if len(nums) >= 2:
+                    print(f"Replacing fallback credentials - Username: {nums[0]}, Password: {nums[1]}")
+                    content = content.replace(nums[0], username)
+                    content = content.replace(nums[1], password)
+                    break
+                    
+    with open(m3u_path, "w", encoding="utf-8") as f:
+        f.write(content)
+        
+    print("M3U file updated successfully.")
 
+def commit_and_push():
+    print("Committing and pushing changes...")
+    subprocess.run(["git", "config", "--global", "user.name", "github-actions[bot]"])
+    subprocess.run(["git", "config", "--global", "user.email", "github-actions[bot]@users.noreply.github.com"])
+    subprocess.run(["git", "add", "languages/lit.m3u"])
+    
+    # Check if there are changes to commit
+    result = subprocess.run(["git", "diff", "--staged", "--quiet"])
+    if result.returncode == 0:
+        print("No changes to commit.")
+        return
+        
+    subprocess.run(["git", "commit", "-m", "Update IPTV credentials [skip ci]"])
+    
+    token = os.getenv("GITHUB_TOKEN")
+    repo = os.getenv("GITHUB_REPOSITORY")
+    if token and repo:
+        remote_url = f"https://x-access-token:{token}@github.com/{repo}.git"
+        subprocess.run(["git", "push", remote_url, "HEAD:master"])
+        print("Pushed successfully.")
+    else:
+        print("GITHUB_TOKEN or GITHUB_REPOSITORY not set. Skipping push.")
 
 if __name__ == "__main__":
-    main()
+    try:
+        check_time()
+        api_key = os.getenv("TWOCAPTCHA_API_KEY")
+        if not api_key:
+            raise ValueError("TWOCAPTCHA_API_KEY environment variable not set.")
+            
+        user, passwd = get_credentials(api_key)
+        update_m3u_file(user, passwd)
+        commit_and_push()
+    except Exception as e:
+        print(f"Error: {e}")
+        exit(1)
