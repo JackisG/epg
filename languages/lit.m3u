@@ -1,7 +1,7 @@
 #EXTM3U
 #EXTINF:-1 tvg-id="DelfiTV.lt@SD" tvg-logo="https://i.imgur.com/IFoHP5M.png" group-title="General",Delfi TV
 https://s1.dcdn.lt/live/televizija/playlist.m3u8
-#EXTINF:-1 tvg-id="BalticumTV.lt@SD" tvg-logo="https://i.imgur.com/35tm57M.png" http-user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36" group-title="Undefined",Balticum TV (576p)
+#EXTINF:-1 tvg-id="BalticumTV.lt@SD" tvg-logo="https://www.balticum.lt/file/manual/Televizija/Balticum%20HD.png" http-user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36" group-title="Undefined",Balticum TV (576p)
 #EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36
 http://stream.mcquack.net/376/index.m3u8
 #EXTINF:-1 tvg-id="BTV.lt@SD" tvg-logo="https://i.imgur.com/AeplGsP.png" http-user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36" group-title="Undefined",BTV (576p)
@@ -52,11 +52,11 @@ https://lnk5511.bstrm.net/live/687e3fa8679c8d4d68fab5dd/hd/manifest.mpd
 #EXTINF:-1 tvg-id="2TV.lt@SD" tvg-logo="https://upload.wikimedia.org/wikipedia/lt/thumb/6/65/2TV_logo.svg/960px-2TV_logo.svg.png" ,2TV
 https://lnk5511.bstrm.net/live/687e3ff1679c8d4d68fab6c5/hd/manifest.mpd
 
-#EXTINF:-1 tvg-id="BalticumAuksinis.lt@HD" tvg-name="LT: BALTICUM AUKSINIS [1080p]" tvg-logo="https://francoisa.win/channel-logo.php?k=U2FsdGVkX1%2BwIKgvYJHTOt38ziE%2FF%2BdW5WCN04ojQKfjuAYYOXz6ojJIoS3SaLkU5evu8iDxownmIphIUtaicZSVZRFawwKhBWP7%2FNIXjE4%3D" group-title="LT: LITHUANIA [1080p]",LT: BALTICUM AUKSINIS [1080p]
+#EXTINF:-1 tvg-id="BalticumAuksinis.lt@HD" tvg-logo="https://www.balticum.lt/file/manual/Televizija/Balticum%20logotipai%20AUKSINIS-01.png" ,BALTICUM AUKSINIS [1080p]
 http://freeiptv.ottc.xyz:80/live/108465849651/328455351894/47287.ts
-#EXTINF:-1 tvg-id="BalticumPlatinum.lt@HD" tvg-name="LT: BALTICUM PLATINUM [1080p]" tvg-logo="https://francoisa.win/channel-logo.php?k=U2FsdGVkX19v%2BwUGDR1V7ZCwBfthKgzgY0beo0V%2BUAkHzhm5o26RXcKrszInjWLmnEBZgaceQ1rWwzDhHhLo4cXugokhJrfkmb%2Fx3Or%2BU3E%3D" group-title="LT: LITHUANIA [1080p]",LT: BALTICUM PLATINUM [1080p]
+#EXTINF:-1 tvg-id="BalticumPlatinum.lt@HD" tvg-logo="https://tv-gidas.lt/media/tv-kanalu-logo/balticum-platinum-logo.png" ,BALTICUM PLATINUM [1080p]
 http://freeiptv.ottc.xyz:80/live/108465849651/328455351894/47288.ts
-#EXTINF:-1 tvg-id="" tvg-name="LT: 3 SPORT 2 [720p]" tvg-logo="https://francoisa.win/channel-logo.php?k=U2FsdGVkX1%2F%2BdI6nAobTvTHNVbTfdOrDR39kjJOzqRb8QU5z3VVwVyCDKQ%2Bzel3oNYdnG%2FzSOCfyxbjzDwhilw%3D%3D" group-title="LT: LITHUANIA [1080p]",LT: 3 SPORT 2 [720p]
+#EXTINF:-1 tvg-id="Go3SportOpen.ee@SD" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/1/1f/Go3_Sport_Open_Logo_2023.svg/500px-Go3_Sport_Open_Logo_2023.svg.png" ,GO3 SPORT Open [720p]
 http://freeiptv.ottc.xyz:80/live/108465849651/328455351894/47282.ts
-#EXTINF:-1 tvg-id="TV3Plus.lv@SD" tvg-name="LT: 3PLUS [1080p]" tvg-logo="https://francoisa.win/channel-logo.php?k=U2FsdGVkX19un5UTFTJxOnAXKcwikaw13mpJMCp%2BkX2s3zn7rvNUX6MCodyrxuEKYcs3rCSNPxeKHl1Q%2Fz7Z7g%3D%3D" group-title="LT: LITHUANIA [1080p]",LT: 3PLUS [1080p]
+#EXTINF:-1 tvg-id="TV3Plus.lv@SD" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/8/8b/TV3_Plus_Logo_2021.svg/960px-TV3_Plus_Logo_2021.svg.png" ,TV3 PLUS [1080p]
 http://freeiptv.ottc.xyz:80/live/108465849651/328455351894/47280.ts
