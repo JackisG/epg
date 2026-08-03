@@ -12,12 +12,15 @@ TWO_CAPTCHA_API_KEY = os.environ.get("TWO_CAPTCHA_API_KEY")
 if not TWO_CAPTCHA_API_KEY:
     raise RuntimeError("TWO_CAPTCHA_API_KEY environment variable not set")
 
+# Known sitekey from the provided HTML
+SITEKEY = "0x4AAAAAAA_Qtby-wpbozX7J"
+
 
 def solve_turnstile(sitekey: str, page_url: str) -> str:
     """Solve Cloudflare Turnstile using 2Captcha and return the token."""
     solver = TwoCaptcha(TWO_CAPTCHA_API_KEY)
     try:
-        # Sometimes adding a timeout helps
+        # Optionally set action if needed (site doesn't specify, but we can try)
         result = solver.turnstile(sitekey=sitekey, url=page_url, timeout=120)
         return result["code"]
     except Exception as e:
@@ -43,29 +46,22 @@ def fetch_credentials() -> tuple[str, str]:
         "Cache-Control": "max-age=0",
     })
 
-    # 1. Get index page to extract sitekey and any session cookies
+    # 1. Get index page to establish session and cookies
     index_url = f"{BASE_URL}/index.php"
     resp = session.get(index_url)
     resp.raise_for_status()
     print("Initial GET status:", resp.status_code)
 
-    soup = BeautifulSoup(resp.text, "html.parser")
-    script_tag = soup.find("script", string=re.compile(r"turnstile\.render"))
-    if not script_tag:
-        raise RuntimeError("Could not find turnstile.render script")
-    match = re.search(r'sitekey:\s*"([^"]+)"', script_tag.string)
-    if not match:
-        raise RuntimeError("Could not extract sitekey")
-    sitekey = match.group(1)
-    print(f"Extracted sitekey: {sitekey}")
-
-    # 2. Solve Turnstile challenge
-    token = solve_turnstile(sitekey, index_url)
+    # 2. Solve Turnstile challenge (use hardcoded sitekey)
+    print(f"Using sitekey: {SITEKEY}")
+    token = solve_turnstile(SITEKEY, index_url)
     print(f"Received Turnstile token: {token[:30]}...")
+
+    # Wait a moment to ensure token is valid
+    time.sleep(2)
 
     # 3. Submit the form with the token
     data = {"cf-turnstile-response": token}
-    # Use proper headers for POST
     post_headers = {
         "Origin": BASE_URL,
         "Referer": index_url,
@@ -75,30 +71,27 @@ def fetch_credentials() -> tuple[str, str]:
     print(f"POST final URL: {post_resp.url}")
     print(f"POST final status: {post_resp.status_code}")
 
-    # 4. Check if we got the credentials page
+    # 4. Check if we reached the credentials page
     if "IPTV account information" in post_resp.text:
-        # success
+        # Success
         pass
     else:
-        # Try to find any error message
+        # Try to find error messages
         error_msg = None
-        # Look for common error patterns
         if "invalid" in post_resp.text.lower():
             error_msg = "Invalid token error"
         elif "try again" in post_resp.text.lower():
             error_msg = "Try again message"
-        else:
-            # Maybe the page contains the form again; check for the presence of the captcha
-            if "turnstile.render" in post_resp.text:
-                error_msg = "Captcha still present, token likely rejected"
+        elif "turnstile.render" in post_resp.text:
+            error_msg = "Captcha still present, token likely rejected"
         if error_msg:
             print(f"Error detected: {error_msg}")
-        # Dump a snippet for debugging
         snippet = post_resp.text[:800]
         print("Response snippet:")
         print(snippet)
         raise RuntimeError("Failed to reach credentials page")
 
+    # 5. Extract credentials
     soup = BeautifulSoup(post_resp.text, "html.parser")
     user_input = soup.find("input", {"id": "accUser"})
     pass_input = soup.find("input", {"id": "accPass"})
