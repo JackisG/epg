@@ -1,6 +1,8 @@
 import os
 import re
 import time
+import random
+import string
 import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
@@ -14,8 +16,10 @@ if not TWO_CAPTCHA_API_KEY:
 SITEKEY = "0x4AAAAAAA_Qtby-wpbozX7J"
 
 
-def solve_turnstile(page_url: str) -> str:
-    """Solve Turnstile using 2Captcha API directly."""
+def solve_turnstile(page_url: str, action: str = "submit", cdata: str = None) -> str:
+    """Solve Turnstile using 2Captcha API with optional action and cdata."""
+    if cdata is None:
+        cdata = ''.join(random.choices(string.ascii_letters + string.digits, k=12))
     create_url = "https://2captcha.com/in.php"
     data = {
         "key": TWO_CAPTCHA_API_KEY,
@@ -23,13 +27,15 @@ def solve_turnstile(page_url: str) -> str:
         "sitekey": SITEKEY,
         "pageurl": page_url,
         "json": 1,
+        "action": action,
+        "data": cdata,
     }
     resp = requests.post(create_url, data=data)
     resp_json = resp.json()
     if resp_json.get("status") != 1:
         raise RuntimeError(f"Failed to create captcha task: {resp_json}")
     captcha_id = resp_json["request"]
-    print(f"Captcha created with ID: {captcha_id}")
+    print(f"Captcha created with ID: {captcha_id} (action={action}, cdata={cdata})")
 
     result_url = "https://2captcha.com/res.php"
     poll_data = {
@@ -55,46 +61,59 @@ def solve_turnstile(page_url: str) -> str:
     raise RuntimeError("Timed out waiting for captcha solution")
 
 
-def fetch_credentials() -> tuple[str, str]:
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-        page = context.new_page()
-        stealth_sync(page)
+def fetch_credentials(max_retries=3) -> tuple[str, str]:
+    for attempt in range(max_retries):
+        print(f"\nAttempt {attempt+1}/{max_retries}")
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+            page = context.new_page()
+            stealth_sync(page)
 
-        # Go to the page
-        page.goto(BASE_URL + "/index.php")
-        page.wait_for_load_state("networkidle")
+            # Go to the page
+            page.goto(BASE_URL + "/index.php")
+            page.wait_for_load_state("networkidle")
 
-        # Solve the challenge
-        token = solve_turnstile(BASE_URL + "/index.php")
-        print(f"Token: {token[:30]}...")
+            # Solve the challenge (try different action/cdata combinations)
+            action = "submit" if attempt % 2 == 0 else "login"
+            cdata = ''.join(random.choices(string.ascii_letters + string.digits, k=12))
+            token = solve_turnstile(BASE_URL + "/index.php", action=action, cdata=cdata)
+            print(f"Token: {token[:30]}...")
 
-        # Set the hidden input value using JavaScript
-        page.evaluate(f"""
-            document.querySelector("input[name='cf-turnstile-response']").value = "{token}";
-            // Enable the submit button (simulate the callback)
-            document.querySelector("#create-btn").disabled = false;
-            document.querySelector("#please-wait").style.display = "none";
-        """)
+            # Set the token and enable the button
+            page.evaluate(f"""
+                document.querySelector("input[name='cf-turnstile-response']").value = "{token}";
+                document.querySelector("#create-btn").disabled = false;
+                document.querySelector("#please-wait").style.display = "none";
+            """)
 
-        # Click the submit button
-        page.click("input[type='submit']")
+            # Submit the form
+            page.click("input[type='submit']")
 
-        # Wait for the credentials page to load
-        try:
-            page.wait_for_url("**/index.php?action=view", timeout=15000)
-        except:
-            page.wait_for_load_state("networkidle", timeout=5000)
-        time.sleep(2)
+            # Wait for the credentials page
+            try:
+                page.wait_for_url("**/index.php?action=view", timeout=15000)
+            except:
+                page.wait_for_load_state("networkidle", timeout=5000)
+            time.sleep(2)
 
-        # Verify we are on the right page
-        if "IPTV account information" not in page.content():
-            raise RuntimeError("Token likely rejected - captcha page returned")
+            # Check if we got the credentials page
+            if "IPTV account information" in page.content():
+                # Success
+                break
+            else:
+                print("Token rejected, retrying...")
+                # Log a snippet for debugging
+                snippet = page.content()[:500]
+                print("Snippet:", snippet)
+                browser.close()
+                if attempt == max_retries - 1:
+                    raise RuntimeError("Failed to reach credentials page after multiple attempts")
+                continue
 
-        # Extract credentials
+        # If we break out, we have success
         html = page.content()
         soup = BeautifulSoup(html, "html.parser")
         user_input = soup.find("input", {"id": "accUser"})
