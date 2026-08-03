@@ -16,7 +16,6 @@ SITEKEY = "0x4AAAAAAA_Qtby-wpbozX7J"
 
 def solve_turnstile(page_url: str) -> str:
     """Solve Turnstile using 2Captcha API directly."""
-    # 1. Create task
     create_url = "https://2captcha.com/in.php"
     data = {
         "key": TWO_CAPTCHA_API_KEY,
@@ -32,7 +31,6 @@ def solve_turnstile(page_url: str) -> str:
     captcha_id = resp_json["request"]
     print(f"Captcha created with ID: {captcha_id}")
 
-    # 2. Poll for result
     result_url = "https://2captcha.com/res.php"
     poll_data = {
         "key": TWO_CAPTCHA_API_KEY,
@@ -77,9 +75,12 @@ def fetch_credentials() -> tuple[str, str]:
         # Set the hidden input value using JavaScript
         page.evaluate(f"""
             document.querySelector("input[name='cf-turnstile-response']").value = "{token}";
+            // Enable the submit button (simulate the callback)
+            document.querySelector("#create-btn").disabled = false;
+            document.querySelector("#please-wait").style.display = "none";
         """)
 
-        # Submit the form
+        # Click the submit button
         page.click("input[type='submit']")
 
         # Wait for the credentials page to load
@@ -87,7 +88,7 @@ def fetch_credentials() -> tuple[str, str]:
             page.wait_for_url("**/index.php?action=view", timeout=15000)
         except:
             page.wait_for_load_state("networkidle", timeout=5000)
-        time.sleep(2)  # allow any dynamic content
+        time.sleep(2)
 
         # Verify we are on the right page
         if "IPTV account information" not in page.content():
