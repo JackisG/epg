@@ -1,137 +1,127 @@
 import os
-import sys
-import time
-import requests
-import json
 import re
-from datetime import datetime
-import pytz
+import time
+import json
+import requests
 from bs4 import BeautifulSoup
 from twocaptcha import TwoCaptcha
-from base64 import b64encode
-from nacl.public import PublicKey, SealedBox
 
-def check_time():
-    # Bypass time check if FORCE_RUN is set to 'true' (via workflow_dispatch)
-    if os.getenv('FORCE_RUN', 'false').lower() == 'true':
-        print("✅ FORCE_RUN is enabled. Bypassing Vilnius time check.")
-        return True
-        
-    vilnius_tz = pytz.timezone('Europe/Vilnius')
-    now = datetime.now(vilnius_tz)
-    current_hour = now.hour
-    current_minute = now.minute
-    
-    # Only run between 5 AM and 6 AM Vilnius time
-    if current_hour < 5:
-        print(f"⏳ Current time in Vilnius is {current_hour}:{current_minute}. Skipping execution until 5 AM.")
-        return False
-    return True
+# --- Configuration ---
+SITE_URL = "https://freeiptv2023-d.ottc.xyz/index.php"
+SITE_KEY = "0x4AAAAAAA_Qtby-wpbozX7J"  # Extracted from the site's Turnstile config
+API_KEY = os.environ.get("TWOCAPTCHA_API_KEY")
 
-def solve_turnstile(api_key, site_key, url):
-    solver = TwoCaptcha(api_key)
+solver = TwoCaptcha(API_KEY)
+
+def get_turnstile_token():
+    print("🧩 Sending Turnstile challenge to 2Captcha...")
     try:
-        print("🧩 Sending Turnstile challenge to 2Captcha...")
-        result = solver.turnstile(sitekey=site_key, url=url)
+        result = solver.turnstile(
+            sitekey=SITE_KEY,
+            url=SITE_URL
+        )
         print("✅ Turnstile solved successfully.")
         return result['code']
     except Exception as e:
-        print(f"❌ Error solving Turnstile: {e}")
-        sys.exit(1)
+        print(f"❌ 2Captcha error: {e}")
+        return None
 
-def get_credentials(token):
-    url = "https://freeiptv2023-d.ottc.xyz/index.php"
-    payload = {
-        "cf-turnstile-response": token
-    }
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Origin": "https://freeiptv2023-d.ottc.xyz",
-        "Referer": "https://freeiptv2023-d.ottc.xyz/index.php"
+def extract_credentials(html_content):
+    """
+    Robust parser that handles tightly packed DOM text where labels 
+    and values might be concatenated without spaces.
+    """
+    soup = BeautifulSoup(html_content, 'html.parser')
+    creds = {}
+    
+    mapping = {
+        "IPTV Server URL": "server",
+        "IPTV Username": "username",
+        "IPTV Password": "password",
+        "M3U Download Link": "m3u",
+        "Activation Time": "activation",
+        "Expiration Time": "expiration"
     }
     
-    session = requests.Session()
-    session.get(url, headers=headers)
-    response = session.post(url, data=payload, headers=headers)
-    
-    if "IPTV account information" not in response.text:
-        print("❌ Failed to retrieve credentials. Captcha might be invalid or page structure changed.")
-        sys.exit(1)
+    # Strategy 1: Standard DOM Traversal
+    for label, key in mapping.items():
+        label_el = soup.find(string=re.compile(re.escape(label)))
+        if label_el:
+            parent = label_el.find_parent(['tr', 'div', 'li', 'p', 'table'])
+            if parent:
+                next_cell = parent.find_next(['td', 'div', 'span', 'a', 'input', 'strong'])
+                if next_cell:
+                    if next_cell.name == 'input':
+                        creds[key] = next_cell.get('value', '').strip()
+                    elif next_cell.name == 'a':
+                        creds[key] = next_cell.get('href', next_cell.get_text()).strip()
+                    else:
+                        creds[key] = next_cell.get_text(strip=True)
         
-    soup = BeautifulSoup(response.text, 'html.parser')
-    text = soup.get_text()
-    
-    # Extracting credentials using Regex based on the site's text layout
-    server_url = re.search(r'IPTV Server URL\s*([a-zA-Z0-9\-\.\/:_]+)', text)
-    username = re.search(r'IPTV Username\s*([a-zA-Z0-9]+)', text)
-    password = re.search(r'IPTV Password\s*([a-zA-Z0-9]+)', text)
-    m3u_link = re.search(r'M3U Download Link\s*(http[s]?://[^\s]+)', text)
-    
-    if not all([server_url, username, password, m3u_link]):
-        print("❌ Could not parse all credentials from the page.")
-        print("Page text snippet:", text[:500])
-        sys.exit(1)
-        
-    creds = {
-        "IPTV_SERVER_URL": server_url.group(1).strip(),
-        "IPTV_USERNAME": username.group(1).strip(),
-        "IPTV_PASSWORD": password.group(1).strip(),
-        "IPTV_M3U_LINK": m3u_link.group(1).strip()
-    }
-    
-    print("✅ Credentials extracted successfully.")
+        # Strategy 2: Regex Fallback for concatenated text (e.g. "IPTV Usernamejohndoe")
+        if not creds.get(key):
+            text = soup.get_text()
+            next_labels = [re.escape(l) for l in mapping.keys() if l != label]
+            # Capture everything between the current label and the next known label
+            pattern = rf"{re.escape(label)}(.*?)(?:{'|'.join(next_labels)}|$)"
+            match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+            if match:
+                val = match.group(1).strip()
+                val = re.sub(r'\s+', ' ', val).strip() # Clean up whitespace
+                if val:
+                    creds[key] = val
+
     return creds
 
-def encrypt_secret(public_key: str, secret_value: str) -> str:
-    pk = PublicKey(public_key.encode("utf-8"))
-    sealed_box = SealedBox(pk)
-    encrypted = sealed_box.encrypt(secret_value.encode("utf-8"))
-    return b64encode(encrypted).decode("utf-8")
+def main():
+    token = get_turnstile_token()
+    if not token:
+        print("❌ Failed to get Turnstile token.")
+        exit(1)
 
-def update_github_secrets(creds):
-    token = os.getenv('GITHUB_TOKEN')
-    repo = os.getenv('GITHUB_REPOSITORY')
-    
-    if not token or not repo:
-        print("❌ Missing GITHUB_TOKEN or GITHUB_REPOSITORY environment variables.")
-        return
+    session = requests.Session()
+    # Use a realistic User-Agent to prevent Cloudflare from dropping the POST request
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+        "Referer": SITE_URL,
+        "Origin": "https://freeiptv2023-d.ottc.xyz"
+    })
 
-    headers = {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github.v3+json"
+    # 1. Establish Session (Crucial for Cloudflare & PHP Session Cookies)
+    print("🌐 Initializing session and fetching cookies...")
+    session.get(SITE_URL)
+    time.sleep(2) # Mimic human delay to avoid rate limits
+
+    # 2. Submit the POST request with the exact Turnstile parameter name
+    print("📤 Submitting credentials request...")
+    payload = {
+        "cf-turnstile-response": token  # MUST be this exact key
     }
     
-    pub_key_url = f"https://api.github.com/repos/{repo}/actions/secrets/public-key"
-    res = requests.get(pub_key_url, headers=headers).json()
+    response = session.post(SITE_URL, data=payload, allow_redirects=True)
     
-    if 'key' not in res:
-        print("❌ Failed to fetch repository public key. Ensure your PAT_TOKEN has 'repo' scope.")
-        print(res)
-        sys.exit(1)
+    # 3. Verify and Parse
+    if "IPTV account information" in response.text or "IPTV Server URL" in response.text:
+        print("✅ Successfully reached the credentials page!")
+        creds = extract_credentials(response.text)
         
-    for secret_name, secret_value in creds.items():
-        encrypted_value = encrypt_secret(res['key'], secret_value)
-        secret_url = f"https://api.github.com/repos/{repo}/actions/secrets/{secret_name}"
-        payload = {
-            "encrypted_value": encrypted_value,
-            "key_id": res['key_id']
-        }
-        r = requests.put(secret_url, headers=headers, json=payload)
-        if r.status_code in [201, 204]:
-            print(f"✅ Successfully updated secret: {secret_name}")
+        if creds.get("username") and creds.get("password"):
+            print(f"🎯 Extracted Credentials: {json.dumps(creds, indent=2)}")
+            
+            # --- INSERT YOUR LOGIC TO UPDATE REPO / SAVE FILE HERE ---
+            # Example: Save to a JSON file for the next workflow steps
+            with open('credentials.json', 'w') as f:
+                json.dump(creds, f)
+            
         else:
-            print(f"❌ Failed to update {secret_name}: {r.text}")
+            print("❌ Reached the page, but failed to parse credentials. DOM structure likely changed.")
+            print("Debug HTML Snippet:", response.text[:1000])
+            exit(1)
+    else:
+        print("❌ Failed to retrieve credentials. Captcha rejected or page structure changed.")
+        print("Response Status:", response.status_code)
+        print("Response Snippet:", response.text[:500])
+        exit(1)
 
 if __name__ == "__main__":
-    if not check_time():
-        sys.exit(0)
-        
-    api_key = os.getenv('TWOCAPTCHA_API_KEY')
-    site_key = "0x4AAAAAAA_Qtby-wpbozX7J" # Extracted from freeiptv2023-d.ottc.xyz
-    url = "https://freeiptv2023-d.ottc.xyz/index.php"
-    
-    token = solve_turnstile(api_key, site_key, url)
-    creds = get_credentials(token)
-    update_github_secrets(creds)
-    print("🎉 Workflow completed successfully.")
+    main()
