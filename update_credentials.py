@@ -6,13 +6,16 @@ import time
 import asyncio
 import requests
 from github import Github
-from cloakbrowser import launch_async
+from rebrowser_playwright.async_api import async_playwright
 
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 ANTICAPTCHA_API_KEY = os.environ["ANTICAPTCHA_API_KEY"]
 REPO_NAME = "JackisG/epg"
 FILE_PATH = "languages/lit.m3u"
 TARGET_URL = "https://freeiptv2023-d.ottc.xyz/index.php?action=view"
+
+# Known sitekey for this domain (from earlier logs)
+KNOWN_SITEKEY = "0x4AAAAAAA_Qtby-wpbozX7J"
 
 def solve_turnstile_anticaptcha(sitekey, page_url):
     print("🧩 Submitting Turnstile to anti-captcha.com...")
@@ -53,79 +56,88 @@ def solve_turnstile_anticaptcha(sitekey, page_url):
     raise Exception("Timeout waiting for solution")
 
 async def fetch_new_credentials():
-    print("🌐 Launching CloakBrowser Pro (with xvfb)...")
-    browser = await launch_async(
-        headless=False,
-        humanize=True,
-        args=["--no-sandbox", "--disable-dev-shm-usage"],
-        timeout=120000,
-    )
-    page = await browser.new_page()
+    print("🌐 Launching rebrowser-playwright (stealth)...")
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"]
+        )
+        context = await browser.new_context(
+            viewport={"width": 1280, "height": 720},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        page = await context.new_page()
 
-    print("🔗 Navigating to page (domcontentloaded)...")
-    await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
+        # Apply stealth script
+        await page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            delete window.__playwright__binding__;
+            delete window.__pwInitScripts;
+            window.chrome = { runtime: {} };
+        """)
 
-    # Wait for either the credentials OR the Turnstile widget
-    # If credentials appear first, we're done.
-    try:
-        # Wait for #accUser to appear, but only for 15 seconds
-        await page.wait_for_selector("#accUser", timeout=15000)
+        print("🔗 Navigating to page...")
+        await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
+
+        # Wait for either credentials or the challenge
+        try:
+            await page.wait_for_selector("#accUser", timeout=15000)
+            username = await page.get_attribute("#accUser", "value")
+            password = await page.get_attribute("#accPass", "value")
+            if username and password:
+                print(f"👤 Credentials found! Username: {username}")
+                print(f"🔑 Password: {password}")
+                await browser.close()
+                return username, password
+        except Exception:
+            print("⏳ Credentials not loaded yet. Looking for challenge...")
+
+        # Extract sitekey from page, fallback to known one
+        sitekey = None
+        try:
+            await page.wait_for_selector("[data-sitekey]", timeout=10000)
+            sitekey = await page.get_attribute("[data-sitekey]", "data-sitekey")
+        except Exception:
+            pass
+
+        if not sitekey:
+            content = await page.content()
+            match = re.search(r'data-sitekey=["\']([^"\']+)["\']', content)
+            if match:
+                sitekey = match.group(1)
+
+        if not sitekey:
+            print("⚠️ Could not find sitekey. Using known sitekey.")
+            sitekey = KNOWN_SITEKEY
+
+        print(f"🔑 Using sitekey: {sitekey}")
+
+        # Solve via anti-captcha
+        token = solve_turnstile_anticaptcha(sitekey, TARGET_URL)
+
+        # Inject token and reload
+        await page.evaluate(f"""
+            const input = document.querySelector('input[name="cf-turnstile-response"]');
+            if (input) input.value = '{token}';
+        """)
+        await page.wait_for_timeout(2000)
+        await page.reload(wait_until="domcontentloaded")
+
+        # Wait for credentials
+        try:
+            await page.wait_for_selector("#accUser", timeout=30000)
+        except Exception:
+            content = await page.content()
+            print("⚠️ Page after injection (first 1000 chars):")
+            print(content[:1000])
+            raise Exception("Credentials not found – token may have been rejected.")
+
         username = await page.get_attribute("#accUser", "value")
         password = await page.get_attribute("#accPass", "value")
-        print(f"👤 CloakBrowser auto-solved! Username: {username}")
-        print(f"🔑 Password: {password}")
+        print(f"👤 New Username: {username}")
+        print(f"🔑 New Password: {password}")
         await browser.close()
         return username, password
-    except Exception:
-        print("⏳ Credentials not found yet. Looking for Turnstile challenge...")
-
-    # If credentials didn't appear, find the sitekey
-    sitekey = None
-    try:
-        # Wait for the Turnstile widget
-        await page.wait_for_selector("[data-sitekey]", timeout=15000)
-        sitekey = await page.get_attribute("[data-sitekey]", "data-sitekey")
-    except Exception:
-        # Fallback: search in HTML
-        content = await page.content()
-        match = re.search(r'data-sitekey=["\']([^"\']+)["\']', content)
-        if match:
-            sitekey = match.group(1)
-
-    if not sitekey:
-        content = await page.content()
-        print("⚠️ Full page content (first 2000 chars):")
-        print(content[:2000])
-        raise Exception("Could not find Turnstile sitekey. Page may be blocked.")
-
-    print(f"🔑 Sitekey: {sitekey}")
-
-    # Solve via anti-captcha
-    token = solve_turnstile_anticaptcha(sitekey, TARGET_URL)
-
-    # Inject token
-    await page.evaluate(f"""
-        const input = document.querySelector('input[name="cf-turnstile-response"]');
-        if (input) input.value = '{token}';
-    """)
-    await page.wait_for_timeout(2000)
-    await page.reload(wait_until="domcontentloaded")
-
-    # Wait for credentials after injection
-    try:
-        await page.wait_for_selector("#accUser", timeout=30000)
-    except Exception:
-        content = await page.content()
-        print("⚠️ Page after injection (first 1000 chars):")
-        print(content[:1000])
-        raise Exception("Credentials not found – token may have been rejected.")
-
-    username = await page.get_attribute("#accUser", "value")
-    password = await page.get_attribute("#accPass", "value")
-    print(f"👤 New Username: {username}")
-    print(f"🔑 New Password: {password}")
-    await browser.close()
-    return username, password
 
 def update_m3u_file(username, password):
     print("📂 Connecting to GitHub...")
