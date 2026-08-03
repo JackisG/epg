@@ -1,5 +1,2 @@
-requests
-beautifulsoup4
-pytz
-2captcha-python
-pynacl
+playwright==1.41.2
+beautifulsoup4==4.12.3
