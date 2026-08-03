@@ -1,119 +1,70 @@
 import os
 import re
 import time
-import random
-import string
-import requests
-from bs4 import BeautifulSoup
 from twocaptcha import TwoCaptcha
+from playwright.sync_api import sync_playwright
+from playwright_stealth import stealth_sync
+from bs4 import BeautifulSoup
 
 BASE_URL = "https://freeiptv2023-d.ottc.xyz"
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 TWO_CAPTCHA_API_KEY = os.environ.get("TWO_CAPTCHA_API_KEY")
-
 if not TWO_CAPTCHA_API_KEY:
-    raise RuntimeError("TWO_CAPTCHA_API_KEY environment variable not set")
+    raise RuntimeError("TWO_CAPTCHA_API_KEY not set")
 
 SITEKEY = "0x4AAAAAAA_Qtby-wpbozX7J"
 
 
-def solve_turnstile(sitekey: str, page_url: str) -> str:
-    """Solve Cloudflare Turnstile using 2Captcha and return the token."""
+def solve_turnstile(page_url: str) -> str:
+    """Solve Turnstile via 2Captcha."""
     solver = TwoCaptcha(TWO_CAPTCHA_API_KEY)
-    # Generate a random cData (some sites require it)
-    cdata = ''.join(random.choices(string.ascii_letters + string.digits, k=12))
-    try:
-        result = solver.turnstile(
-            sitekey=sitekey,
-            url=page_url,
-            action="submit",
-            cdata=cdata,
-            timeout=120
+    result = solver.turnstile(sitekey=SITEKEY, url=page_url, timeout=120)
+    return result["code"]
+
+
+def fetch_credentials():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
-        return result["code"]
-    except Exception as e:
-        print(f"2Captcha error: {e}")
-        raise
+        page = context.new_page()
+        stealth_sync(page)  # hide automation
+
+        # 1. Go to the page
+        page.goto(BASE_URL + "/index.php")
+        page.wait_for_load_state("networkidle")
+
+        # 2. Solve the challenge
+        token = solve_turnstile(BASE_URL + "/index.php")
+        print(f"Token: {token[:30]}...")
+
+        # 3. Fill and submit the form
+        page.fill("input[name='cf-turnstile-response']", token)
+        page.click("input[type='submit']")
+
+        # 4. Wait for navigation to the credentials page
+        page.wait_for_url("**/index.php?action=view", timeout=15000)
+        time.sleep(2)  # ensure content loads
+
+        # 5. Extract credentials
+        html = page.content()
+        soup = BeautifulSoup(html, "html.parser")
+        user_input = soup.find("input", {"id": "accUser"})
+        pass_input = soup.find("input", {"id": "accPass"})
+        if not user_input or not pass_input:
+            raise RuntimeError("Credentials not found on page")
+
+        username = user_input.get("value", "").strip()
+        password = pass_input.get("value", "").strip()
+        if not username or not password:
+            raise RuntimeError("Empty credentials")
+
+        print(f"New credentials: {username} / {password}")
+        browser.close()
+        return username, password
 
 
-def fetch_credentials(max_attempts=3) -> tuple[str, str]:
-    """Attempt to fetch credentials with retries if token is rejected."""
-    for attempt in range(max_attempts):
-        print(f"\nAttempt {attempt+1}/{max_attempts}")
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate",
-            "DNT": "1",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-            "Cache-Control": "max-age=0",
-        })
-
-        # 1. Get index page to establish session
-        index_url = f"{BASE_URL}/index.php"
-        resp = session.get(index_url)
-        resp.raise_for_status()
-        print("Initial GET status:", resp.status_code)
-
-        # 2. Solve Turnstile
-        print(f"Using sitekey: {SITEKEY}")
-        token = solve_turnstile(SITEKEY, index_url)
-        print(f"Received token: {token[:30]}...")
-
-        # 3. Wait a few seconds to let the token become active
-        time.sleep(3)
-
-        # 4. Submit the token
-        data = {"cf-turnstile-response": token}
-        post_headers = {
-            "Origin": BASE_URL,
-            "Referer": index_url,
-            "Content-Type": "application/x-www-form-urlencoded",
-        }
-        post_resp = session.post(index_url, data=data, headers=post_headers, timeout=30)
-        print(f"POST final URL: {post_resp.url}")
-        print(f"POST final status: {post_resp.status_code}")
-
-        # 5. Check if we reached the credentials page
-        if "IPTV account information" in post_resp.text:
-            break
-        else:
-            print("Token rejected, retrying...")
-            # Print a small snippet for debugging
-            snippet = post_resp.text[:500]
-            print("Snippet:", snippet)
-            # If it's the last attempt, raise an error
-            if attempt == max_attempts - 1:
-                raise RuntimeError("Failed to reach credentials page after multiple attempts")
-            # Otherwise, wait and continue loop
-            time.sleep(5)
-            continue
-
-    # 6. Extract credentials
-    soup = BeautifulSoup(post_resp.text, "html.parser")
-    user_input = soup.find("input", {"id": "accUser"})
-    pass_input = soup.find("input", {"id": "accPass"})
-    if not user_input or not pass_input:
-        raise RuntimeError("Credentials fields not found on page")
-
-    username = user_input.get("value", "").strip()
-    password = pass_input.get("value", "").strip()
-    if not username or not password:
-        raise RuntimeError("Username or password is empty")
-
-    print(f"New credentials: username={username}, password={password}")
-    return username, password
-
-
-def update_m3u_file(file_path: str, new_user: str, new_pass: str) -> None:
-    """Replace all occurrences of old IPTV credentials in lit.m3u with the new ones."""
+def update_m3u(file_path, new_user, new_pass):
     with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
 
@@ -123,7 +74,7 @@ def update_m3u_file(file_path: str, new_user: str, new_pass: str) -> None:
         raise RuntimeError("No existing credentials found in lit.m3u")
 
     old_user, old_pass = matches[0]
-    print(f"Old credentials found: username={old_user}, password={old_pass}")
+    print(f"Old credentials: {old_user} / {old_pass}")
 
     new_content = re.sub(
         pattern,
@@ -132,21 +83,15 @@ def update_m3u_file(file_path: str, new_user: str, new_pass: str) -> None:
     )
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(new_content)
-
-    print("lit.m3u updated successfully")
+    print("lit.m3u updated.")
 
 
 def main():
-    try:
-        username, password = fetch_credentials()
-        m3u_path = "languages/lit.m3u"
-        if not os.path.isfile(m3u_path):
-            raise FileNotFoundError(f"Could not find {m3u_path}")
-
-        update_m3u_file(m3u_path, username, password)
-    except Exception as e:
-        print(f"Script failed: {e}")
-        raise
+    user, passw = fetch_credentials()
+    m3u_path = "languages/lit.m3u"
+    if not os.path.isfile(m3u_path):
+        raise FileNotFoundError(m3u_path)
+    update_m3u(m3u_path, user, passw)
 
 
 if __name__ == "__main__":
