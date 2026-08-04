@@ -4,7 +4,6 @@ import sys
 import time
 import requests
 from playwright.sync_api import sync_playwright
-from playwright_stealth import stealth_sync
 
 def solve_turnstile_2captcha(sitekey, page_url, user_agent, api_key):
     print("Submitting Turnstile challenge to 2captcha...")
@@ -49,7 +48,7 @@ def main():
     sitekey = "0x4AAAAAAA_Qtby-wpbozX7J"
     
     with sync_playwright() as p:
-        print("Launching Chromium browser with stealth...")
+        print("Launching Chromium browser...")
         browser = p.chromium.launch(
             headless=True,
             args=[
@@ -70,8 +69,15 @@ def main():
             timezone_id="Europe/Vilnius"
         )
         page = context.new_page()
-        stealth_sync(page)
         page.set_default_timeout(60000)
+        
+        # Inject standard stealth scripts directly
+        page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            window.navigator.chrome = { runtime: {} };
+            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+        """)
         
         print(f"Navigating to {site_url}...")
         page.goto(site_url, wait_until="domcontentloaded", timeout=60000)
@@ -81,10 +87,10 @@ def main():
         
         print("Waiting for Turnstile widget...")
         try:
-            iframe_locator = page.frame_locator("#freeiptv-turnstile iframe, iframe[src*='challenges.cloudflare.com']")
-            if iframe_locator:
+            iframe = page.frame_locator("#freeiptv-turnstile iframe, iframe[src*='challenges.cloudflare.com']")
+            if iframe:
                 print("Clicking Turnstile checkbox inside iframe...")
-                iframe_locator.locator("body").click(timeout=5000)
+                iframe.locator("body").click(timeout=5000)
         except Exception as e:
             print(f"Turnstile iframe click note: {e}")
             
