@@ -47,33 +47,19 @@ def main():
     site_url = "https://freeiptv2023-d.ottc.xyz/index.php"
     sitekey = "0x4AAAAAAA_Qtby-wpbozX7J"
     
-    headless_mode = os.environ.get("HEADLESS", "false").lower() == "true"
+    headless_mode = os.environ.get("HEADLESS", "true").lower() == "true"
     
     with sync_playwright() as p:
         print(f"Launching Chromium browser (headless={headless_mode})...")
-        try:
-            browser = p.chromium.launch(
-                headless=headless_mode,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--no-first-run",
-                    "--no-zygote",
-                ]
-            )
-        except Exception as e:
-            print(f"Headless launch fallback due to: {e}")
-            browser = p.chromium.launch(
-                headless=True,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                ]
-            )
+        browser = p.chromium.launch(
+            headless=headless_mode,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+            ]
+        )
             
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -84,7 +70,7 @@ def main():
         page = context.new_page()
         page.set_default_timeout(60000)
         
-        # Inject standard stealth scripts
+        # Anti-detection stealth injections
         page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
             window.chrome = { runtime: {} };
@@ -96,78 +82,119 @@ def main():
         page.goto(site_url, wait_until="domcontentloaded", timeout=60000)
         user_agent = page.evaluate("navigator.userAgent")
         
-        # Wait up to 15 seconds for turnstile iframe or button status
-        print("Waiting for Turnstile widget to load...")
-        time.sleep(5)
+        time.sleep(3)
         
         solved_natively = False
-        for _ in range(10):
+        for _ in range(8):
             btn = page.query_selector("#create-btn")
             if btn and not page.eval_on_selector("#create-btn", "el => el.disabled"):
-                print("Turnstile verified natively in browser!")
+                print("Turnstile verified natively!")
                 solved_natively = True
                 break
-            
-            # Try clicking Turnstile iframe box if found
-            try:
-                frames = page.frames
-                for f in frames:
-                    if "challenges.cloudflare.com" in f.url:
-                        f.click("body", timeout=2000)
-                        break
-            except Exception:
-                pass
             time.sleep(1)
 
         if not solved_natively:
-            print("Turnstile not solved natively. Requesting solution token from 2captcha...")
+            print("Requesting token from 2captcha...")
             if not api_key:
                 print("Error: TWOCAPTCHA_API_KEY environment variable missing.")
                 sys.exit(1)
                 
             token = solve_turnstile_2captcha(sitekey, site_url, user_agent, api_key)
             
-            print("Injecting 2captcha token into Turnstile form...")
+            # Submit POST request directly via fetch() from page context to capture exact response
+            print("Submitting Turnstile token via fetch() API in browser...")
+            fetch_result = page.evaluate("""async (token) => {
+                const formData = new URLSearchParams();
+                formData.append('cf-turnstile-response', token);
+                
+                const response = await fetch('/index.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: formData.toString(),
+                    redirect: 'follow'
+                });
+                
+                const text = await response.text();
+                return {
+                    status: response.status,
+                    url: response.url,
+                    text: text
+                };
+            }""", token)
+            
+            print(f"Fetch Response Status: {fetch_result['status']}, Final URL: {fetch_result['url']}")
+            
+            # Check if fetch response contains IPTV credentials directly
+            if "id=\"accUser\"" in fetch_result['text'] or "accUser" in fetch_result['text']:
+                print("Credentials found in fetch response HTML!")
+                html_content = fetch_result['text']
+                
+                # Parse HTML content directly
+                user_match = re.search(r'id="accUser"\s+value="([^"]+)"', html_content)
+                pass_match = re.search(r'id="accPass"\s+value="([^"]+)"', html_content)
+                
+                if user_match and pass_match:
+                    new_username = user_match.group(1).strip()
+                    new_password = pass_match.group(1).strip()
+                    print(f"Successfully retrieved IPTV credentials -> Username: {new_username}, Password: {new_password}")
+                    browser.close()
+                    
+                    # Update lit.m3u playlist file
+                    m3u_path = os.path.join("languages", "lit.m3u")
+                    if not os.path.exists(m3u_path):
+                        if os.path.exists("lit.m3u"):
+                            m3u_path = "lit.m3u"
+                        else:
+                            print(f"Error: {m3u_path} not found.")
+                            sys.exit(1)
+                            
+                    with open(m3u_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                        
+                    pattern = r"(http://freeiptv\.ottc\.xyz:\d+/live/)[^/]+/[^/]+/"
+                    replacement = rf"\g<1>{new_username}/{new_password}/"
+                    updated_content = re.sub(pattern, replacement, content)
+                    
+                    param_pattern = r"(freeiptv\.ottc\.xyz:\d+/get\.php\?username=)[^&]+(&password=)[^&]+"
+                    updated_content = re.sub(param_pattern, rf"\g<1>{new_username}\g<2>{new_password}", updated_content)
+                    
+                    with open(m3u_path, "w", encoding="utf-8") as f:
+                        f.write(updated_content)
+                        
+                    print(f"Successfully updated credentials in {m3u_path}")
+                    sys.exit(0)
+            
+            # If not in fetch response, set token in DOM and click button
             page.evaluate("""(token) => {
-                const form = document.querySelector('form');
-                let inputs = form.querySelectorAll('input[name="cf-turnstile-response"]');
-                if (inputs.length === 0) {
-                    let input = document.createElement('input');
+                let input = document.querySelector('input[name="cf-turnstile-response"]');
+                if (!input) {
+                    input = document.createElement('input');
                     input.type = 'hidden';
                     input.name = 'cf-turnstile-response';
-                    input.value = token;
-                    form.appendChild(input);
-                } else {
-                    inputs.forEach(i => i.value = token);
+                    document.querySelector('form').appendChild(input);
                 }
-                
-                const btn = document.querySelector('#create-btn');
-                if (btn) btn.removeAttribute('disabled');
-                const waitMsg = document.querySelector('#please-wait');
-                if (waitMsg) waitMsg.style.display = 'none';
+                input.value = token;
+                document.querySelector('#create-btn').removeAttribute('disabled');
             }""", token)
+            
+            page.click("#create-btn")
+            time.sleep(3)
 
-        print("Submitting form via document.querySelector('form').submit()...")
-        with page.expect_navigation(wait_until="domcontentloaded", timeout=30000):
-            page.evaluate("document.querySelector('form').submit()")
-            
-        print(f"URL after form submission: {page.url}")
-        
-        # Check if page auto-redirected or requires explicit navigation
-        if "action=view" not in page.url:
-            print("Checking if credentials session was established...")
-            page.goto("https://freeiptv2023-d.ottc.xyz/index.php?action=view", wait_until="domcontentloaded")
-            print(f"URL after navigating to action=view: {page.url}")
-            
+        # Fallback check
         try:
-            page.wait_for_selector("#accUser", timeout=20000)
+            page.wait_for_selector("#accUser", timeout=15000)
             new_username = page.input_value("#accUser").strip()
             new_password = page.input_value("#accPass").strip()
             print(f"Successfully retrieved IPTV credentials -> Username: {new_username}, Password: {new_password}")
         except Exception:
+            # Save diagnostic files for GitHub Artifacts
+            print("Saving error_page.png and error_page.html for debugging...")
+            page.screenshot(path="error_page.png")
+            with open("error_page.html", "w", encoding="utf-8") as f:
+                f.write(page.content())
             print(f"Error: Failed to find #accUser element. Current URL: {page.url}")
-            print("Page Title:", page.title())
-            print("Page Snippet:\n", page.content()[:1500])
             browser.close()
             sys.exit(1)
             
