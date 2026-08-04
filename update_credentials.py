@@ -3,19 +3,16 @@ import re
 import sys
 import time
 import requests
-from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
-def solve_turnstile(sitekey, page_url, api_key):
-    print("Submitting Turnstile challenge to 2captcha with User-Agent...")
+def solve_turnstile_2captcha(sitekey, page_url, api_key):
+    print("Submitting Turnstile challenge to 2captcha...")
     in_url = "https://2captcha.com/in.php"
     payload = {
         "key": api_key,
         "method": "turnstile",
         "sitekey": sitekey,
         "pageurl": page_url,
-        "useragent": USER_AGENT,
         "json": 1
     }
     r = requests.post(in_url, data=payload)
@@ -27,7 +24,7 @@ def solve_turnstile(sitekey, page_url, api_key):
     print(f"Captcha task submitted ID: {captcha_id}. Waiting for solution...")
     
     res_url = "https://2captcha.com/res.php"
-    for _ in range(36): # Wait up to 3 minutes
+    for _ in range(36):
         time.sleep(5)
         r = requests.get(res_url, params={
             "key": api_key,
@@ -37,7 +34,7 @@ def solve_turnstile(sitekey, page_url, api_key):
         })
         res = r.json()
         if res.get("status") == 1:
-            print("Captcha solved successfully!")
+            print("2captcha solved token successfully!")
             return res["request"]
         elif res.get("request") != "CAPCHA_NOT_READY":
             raise Exception(f"2captcha error: {res}")
@@ -46,62 +43,63 @@ def solve_turnstile(sitekey, page_url, api_key):
 
 def main():
     api_key = os.environ.get("TWOCAPTCHA_API_KEY")
-    if not api_key:
-        print("Error: TWOCAPTCHA_API_KEY environment variable is missing.")
-        sys.exit(1)
-        
     site_url = "https://freeiptv2023-d.ottc.xyz/index.php"
     sitekey = "0x4AAAAAAA_Qtby-wpbozX7J"
     
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": USER_AGENT,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Origin": "https://freeiptv2023-d.ottc.xyz",
-        "Referer": "https://freeiptv2023-d.ottc.xyz/index.php",
-    })
-    
-    # 1. Initial GET to establish session cookies
-    print("Fetching initial page...")
-    init_res = session.get(site_url)
-    print(f"Initial GET Status: {init_res.status_code}, Cookies: {session.cookies.get_dict()}")
-    
-    # 2. Solve Cloudflare Turnstile CAPTCHA via 2captcha
-    token = solve_turnstile(sitekey, site_url, api_key)
-    
-    # 3. Post form payload
-    print("Submitting CAPTCHA response token...")
-    post_data = {
-        "cf-turnstile-response": token
-    }
-    
-    # Handle redirects manually or allow automatic redirect
-    response = session.post(site_url, data=post_data, allow_redirects=True)
-    print(f"POST Response URL: {response.url}, Status: {response.status_code}")
-    for h in response.history:
-        print(f" Redirect: {h.status_code} -> {h.headers.get('Location')}")
-    
-    # Check if we landed on view page or need explicit GET
-    if "action=view" not in response.url:
-        print("Explicitly requesting action=view page...")
-        response = session.get("https://freeiptv2023-d.ottc.xyz/index.php?action=view")
+    with sync_playwright() as p:
+        print("Launching Chromium browser...")
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        page = context.new_page()
         
-    soup = BeautifulSoup(response.text, "html.parser")
-    user_elem = soup.find("input", {"id": "accUser"})
-    pass_elem = soup.find("input", {"id": "accPass"})
-    
-    if not user_elem or not pass_elem:
-        print("Failed to locate username or password on the response page.")
-        print("Page title:", soup.title.string if soup.title else "No title")
-        print("Page snippet:", response.text[:1000])
-        sys.exit(1)
+        print(f"Navigating to {site_url}...")
+        page.goto(site_url, wait_until="networkidle")
         
-    new_username = user_elem.get("value", "").strip()
-    new_password = pass_elem.get("value", "").strip()
-    
-    print(f"Obtained IPTV Credentials - Username: {new_username}, Password: {new_password}")
-    
+        # Wait up to 10 seconds to see if Turnstile auto-solves in real browser
+        auto_solved = False
+        try:
+            page.wait_for_selector("#create-btn:not([disabled])", timeout=10000)
+            print("Turnstile auto-verified by browser!")
+            auto_solved = True
+        except Exception:
+            print("Turnstile did not auto-solve within 10s. Falling back to 2captcha...")
+
+        if not auto_solved:
+            if not api_key:
+                print("Error: TWOCAPTCHA_API_KEY environment variable missing and Turnstile required manual solve.")
+                sys.exit(1)
+                
+            token = solve_turnstile_2captcha(sitekey, site_url, api_key)
+            
+            # Inject token into Turnstile form input and trigger callback / submit form
+            page.evaluate("""(token) => {
+                let input = document.querySelector('input[name="cf-turnstile-response"]');
+                if (!input) {
+                    input = document.createElement('input');
+                    input.type = 'hidden';
+                    input.name = 'cf-turnstile-response';
+                    document.querySelector('form').appendChild(input);
+                }
+                input.value = token;
+                document.querySelector('#create-btn').removeAttribute('disabled');
+            }""", token)
+        
+        print("Clicking submit button...")
+        page.click("#create-btn")
+        
+        # Wait for redirect to credentials view page
+        print("Waiting for credentials page to load...")
+        page.wait_for_selector("#accUser", timeout=20000)
+        
+        new_username = page.input_value("#accUser").strip()
+        new_password = page.input_value("#accPass").strip()
+        
+        print(f"Successfully retrieved IPTV credentials -> Username: {new_username}, Password: {new_password}")
+        
+        browser.close()
+
     # Update lit.m3u file
     m3u_path = os.path.join("languages", "lit.m3u")
     if not os.path.exists(m3u_path):
@@ -116,7 +114,6 @@ def main():
         
     pattern = r"(http://freeiptv\.ottc\.xyz:\d+/live/)[^/]+/[^/]+/"
     replacement = rf"\g<1>{new_username}/{new_password}/"
-    
     updated_content = re.sub(pattern, replacement, content)
     
     param_pattern = r"(freeiptv\.ottc\.xyz:\d+/get\.php\?username=)[^&]+(&password=)[^&]+"
