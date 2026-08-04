@@ -5,14 +5,17 @@ import time
 import requests
 from bs4 import BeautifulSoup
 
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
 def solve_turnstile(sitekey, page_url, api_key):
-    print(f"Submitting Turnstile challenge to 2captcha...")
+    print("Submitting Turnstile challenge to 2captcha with User-Agent...")
     in_url = "https://2captcha.com/in.php"
     payload = {
         "key": api_key,
         "method": "turnstile",
         "sitekey": sitekey,
         "pageurl": page_url,
+        "useragent": USER_AGENT,
         "json": 1
     }
     r = requests.post(in_url, data=payload)
@@ -24,7 +27,7 @@ def solve_turnstile(sitekey, page_url, api_key):
     print(f"Captcha task submitted ID: {captcha_id}. Waiting for solution...")
     
     res_url = "https://2captcha.com/res.php"
-    for _ in range(30):
+    for _ in range(36): # Wait up to 3 minutes
         time.sleep(5)
         r = requests.get(res_url, params={
             "key": api_key,
@@ -52,27 +55,36 @@ def main():
     
     session = requests.Session()
     session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
+        "Origin": "https://freeiptv2023-d.ottc.xyz",
+        "Referer": "https://freeiptv2023-d.ottc.xyz/index.php",
     })
     
-    # Initial GET to establish session cookies
+    # 1. Initial GET to establish session cookies
     print("Fetching initial page...")
-    session.get(site_url)
+    init_res = session.get(site_url)
+    print(f"Initial GET Status: {init_res.status_code}, Cookies: {session.cookies.get_dict()}")
     
-    # Solve Cloudflare Turnstile CAPTCHA
+    # 2. Solve Cloudflare Turnstile CAPTCHA via 2captcha
     token = solve_turnstile(sitekey, site_url, api_key)
     
-    # Post form payload
+    # 3. Post form payload
     print("Submitting CAPTCHA response token...")
     post_data = {
         "cf-turnstile-response": token
     }
     
-    response = session.post(site_url, data=post_data)
+    # Handle redirects manually or allow automatic redirect
+    response = session.post(site_url, data=post_data, allow_redirects=True)
+    print(f"POST Response URL: {response.url}, Status: {response.status_code}")
+    for h in response.history:
+        print(f" Redirect: {h.status_code} -> {h.headers.get('Location')}")
     
-    # Fetch view page if redirect not automatically followed to view
+    # Check if we landed on view page or need explicit GET
     if "action=view" not in response.url:
+        print("Explicitly requesting action=view page...")
         response = session.get("https://freeiptv2023-d.ottc.xyz/index.php?action=view")
         
     soup = BeautifulSoup(response.text, "html.parser")
@@ -81,6 +93,7 @@ def main():
     
     if not user_elem or not pass_elem:
         print("Failed to locate username or password on the response page.")
+        print("Page title:", soup.title.string if soup.title else "No title")
         print("Page snippet:", response.text[:1000])
         sys.exit(1)
         
@@ -92,7 +105,6 @@ def main():
     # Update lit.m3u file
     m3u_path = os.path.join("languages", "lit.m3u")
     if not os.path.exists(m3u_path):
-        # Fallback to local path if directly in working dir
         if os.path.exists("lit.m3u"):
             m3u_path = "lit.m3u"
         else:
@@ -102,14 +114,11 @@ def main():
     with open(m3u_path, "r", encoding="utf-8") as f:
         content = f.read()
         
-    # Regex to replace username and password in freeiptv links
-    # Target structure: http://freeiptv.ottc.xyz:80/live/<USERNAME>/<PASSWORD>/<STREAM_ID>.ts
     pattern = r"(http://freeiptv\.ottc\.xyz:\d+/live/)[^/]+/[^/]+/"
     replacement = rf"\g<1>{new_username}/{new_password}/"
     
     updated_content = re.sub(pattern, replacement, content)
     
-    # Also update any m3u query param URLs if present (e.g. get.php?username=...&password=...)
     param_pattern = r"(freeiptv\.ottc\.xyz:\d+/get\.php\?username=)[^&]+(&password=)[^&]+"
     updated_content = re.sub(param_pattern, rf"\g<1>{new_username}\g<2>{new_password}", updated_content)
     
