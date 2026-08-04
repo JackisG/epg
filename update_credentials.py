@@ -4,11 +4,50 @@ import sys
 import time
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlsplit
+
+
+def normalize_proxy_url(proxy_value):
+    """Return a URL-encoded HTTP proxy URL from a Webshare endpoint."""
+    proxy_value = proxy_value.strip()
+    if not proxy_value:
+        raise ValueError("WEBSHARE_PROXY_URL is empty.")
+
+    if "://" not in proxy_value:
+        # Also accept Webshare's Host:Port:Username:Password export format.
+        parts = proxy_value.split(":", 3)
+        if len(parts) == 4 and parts[1].isdigit():
+            host, port, username, password = parts
+            proxy_value = f"http://{username}:{password}@{host}:{port}"
+
+    if "://" not in proxy_value:
+        proxy_value = f"http://{proxy_value}"
+
+    scheme, authority = proxy_value.split("://", 1)
+    if scheme.lower() != "http" or "@" not in authority:
+        raise ValueError(
+            "Use http://USERNAME:PASSWORD@HOST:PORT (or HOST:PORT:USERNAME:PASSWORD)."
+        )
+
+    credentials, host_port = authority.rsplit("@", 1)
+    username, separator, password = credentials.partition(":")
+    if not separator or not username or not password:
+        raise ValueError("The Webshare proxy URL must contain a username and password.")
+
+    parsed = urlsplit(f"http://{host_port}")
+    if not parsed.hostname or not parsed.port:
+        raise ValueError("The Webshare proxy URL must contain a valid host and port.")
+
+    host = parsed.hostname
+    if ":" in host:
+        host = f"[{host}]"
+    encoded_username = quote(unquote(username), safe="")
+    encoded_password = quote(unquote(password), safe="")
+    return f"http://{encoded_username}:{encoded_password}@{host}:{parsed.port}"
 
 
 def get_proxy_dict(proxy_url):
-    """Return requests-compatible proxy dict from full proxy URL."""
+    """Return a requests-compatible proxy mapping."""
     return {
         "http": proxy_url,
         "https": proxy_url,
@@ -29,10 +68,10 @@ def solve_turnstile_2captcha(sitekey, page_url, api_key, proxy_url=None):
 
     # Pass proxy to 2captcha so the token is solved from the same residential IP
     if proxy_url:
-        parsed = urlparse(proxy_url)
+        parsed = urlsplit(proxy_url)
         proxy_str = f"{parsed.hostname}:{parsed.port}"
         if parsed.username and parsed.password:
-            proxy_str = f"{parsed.username}:{parsed.password}@{proxy_str}"
+            proxy_str = f"{unquote(parsed.username)}:{unquote(parsed.password)}@{proxy_str}"
         payload["proxytype"] = "HTTP"
         payload["proxy"] = proxy_str
         print(f"2captcha will solve via proxy: {parsed.hostname}:{parsed.port}")
@@ -75,7 +114,13 @@ def main():
         print("Error: WEBSHARE_PROXY_URL environment variable is missing.")
         sys.exit(1)
 
-    parsed = urlparse(proxy_url)
+    try:
+        proxy_url = normalize_proxy_url(proxy_url)
+    except ValueError as error:
+        print(f"Error: Invalid WEBSHARE_PROXY_URL: {error}")
+        sys.exit(1)
+
+    parsed = urlsplit(proxy_url)
     print(f"Using Webshare proxy: {parsed.hostname}:{parsed.port}")
 
     site_url = "https://freeiptv2023-d.ottc.xyz/index.php"
