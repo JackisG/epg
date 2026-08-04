@@ -5,14 +5,15 @@ import time
 import requests
 from playwright.sync_api import sync_playwright
 
-def solve_turnstile_2captcha(sitekey, page_url, api_key):
-    print("Submitting Turnstile challenge to 2captcha...")
+def solve_turnstile_2captcha(sitekey, page_url, user_agent, api_key):
+    print(f"Submitting Turnstile challenge to 2captcha...")
     in_url = "https://2captcha.com/in.php"
     payload = {
         "key": api_key,
         "method": "turnstile",
         "sitekey": sitekey,
         "pageurl": page_url,
+        "useragent": user_agent,
         "json": 1
     }
     r = requests.post(in_url, data=payload)
@@ -48,18 +49,31 @@ def main():
     
     with sync_playwright() as p:
         print("Launching Chromium browser...")
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-setuid-sandbox"
+            ]
+        )
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 720}
         )
         page = context.new_page()
         page.set_default_timeout(60000)
         
+        # Mask navigator.webdriver
+        page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
         print(f"Navigating to {site_url}...")
-        # Use domcontentloaded to prevent networkidle timeouts from persistent background requests
         page.goto(site_url, wait_until="domcontentloaded", timeout=60000)
         
-        # Wait up to 10 seconds to check if Turnstile auto-verifies
+        # Get exact browser User-Agent
+        user_agent = page.evaluate("navigator.userAgent")
+        
+        # Check if Turnstile auto-verifies
         auto_solved = False
         try:
             page.wait_for_selector("#create-btn:not([disabled])", timeout=10000)
@@ -73,35 +87,53 @@ def main():
                 print("Error: TWOCAPTCHA_API_KEY environment variable missing.")
                 sys.exit(1)
                 
-            token = solve_turnstile_2captcha(sitekey, site_url, api_key)
+            token = solve_turnstile_2captcha(sitekey, site_url, user_agent, api_key)
             
-            # Inject token into DOM and enable submit button
+            # Inject token into hidden inputs
             page.evaluate("""(token) => {
-                let input = document.querySelector('input[name="cf-turnstile-response"]');
-                if (!input) {
-                    input = document.createElement('input');
-                    input.type = 'hidden';
-                    input.name = 'cf-turnstile-response';
-                    document.querySelector('form').appendChild(input);
-                }
-                input.value = token;
-                document.querySelector('#create-btn').removeAttribute('disabled');
+                const names = ['cf-turnstile-response', 'g-recaptcha-response'];
+                names.forEach(name => {
+                    let elems = document.querySelectorAll(`[name="${name}"]`);
+                    if (elems.length === 0) {
+                        let input = document.createElement('input');
+                        input.type = 'hidden';
+                        input.name = name;
+                        input.value = token;
+                        document.querySelector('form').appendChild(input);
+                    } else {
+                        elems.forEach(el => el.value = token);
+                    }
+                });
+                
+                const btn = document.querySelector('#create-btn');
+                if (btn) btn.removeAttribute('disabled');
             }""", token)
         
-        print("Clicking submit button...")
-        page.click("#create-btn")
+        print("Submitting form...")
+        with page.expect_navigation(wait_until="domcontentloaded", timeout=30000):
+            page.evaluate("document.querySelector('form').submit()")
         
-        print("Waiting for credentials page to load...")
-        page.wait_for_selector("#accUser", timeout=30000)
+        print(f"Current URL after submit: {page.url}")
         
-        new_username = page.input_value("#accUser").strip()
-        new_password = page.input_value("#accPass").strip()
-        
-        print(f"Successfully retrieved IPTV credentials -> Username: {new_username}, Password: {new_password}")
-        
+        # Navigate explicitly to view action if landed on main page
+        if "action=view" not in page.url:
+            print("Navigating to index.php?action=view...")
+            page.goto("https://freeiptv2023-d.ottc.xyz/index.php?action=view", wait_until="domcontentloaded")
+            
+        try:
+            page.wait_for_selector("#accUser", timeout=15000)
+            new_username = page.input_value("#accUser").strip()
+            new_password = page.input_value("#accPass").strip()
+            print(f"Successfully retrieved IPTV credentials -> Username: {new_username}, Password: {new_password}")
+        except Exception:
+            print(f"Error waiting for #accUser element. Current URL: {page.url}")
+            print("Page HTML snippet:", page.content()[:1500])
+            browser.close()
+            sys.exit(1)
+            
         browser.close()
 
-    # Update playlist file
+    # Update lit.m3u file
     m3u_path = os.path.join("languages", "lit.m3u")
     if not os.path.exists(m3u_path):
         if os.path.exists("lit.m3u"):
