@@ -58,9 +58,19 @@ def main():
         print("Error: WEBSHARE_PROXY_URL environment variable is missing.")
         sys.exit(1)
 
-    print(f"Using Webshare proxy: {proxy_url.split('@')[-1]}")  # log only host:port, not credentials
+    # Parse proxy URL into components - Playwright requires credentials as separate fields
+    from urllib.parse import urlparse
+    parsed = urlparse(proxy_url)
+    proxy_host = f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
+    proxy_user = parsed.username
+    proxy_pass = parsed.password
 
-    proxy_config = {"server": proxy_url}
+    print(f"Using Webshare proxy: {parsed.hostname}:{parsed.port}")
+
+    proxy_config = {"server": proxy_host}
+    if proxy_user and proxy_pass:
+        proxy_config["username"] = proxy_user
+        proxy_config["password"] = proxy_pass
 
     with sync_playwright() as p:
         print(f"Launching Chromium browser (headless={headless_mode})...")
