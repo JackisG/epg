@@ -47,7 +47,6 @@ def main():
     site_url = "https://freeiptv2023-d.ottc.xyz/index.php"
     sitekey = "0x4AAAAAAA_Qtby-wpbozX7J"
     
-    # Try non-headless mode first (for xvfb environments), fall back to headless if GUI not available
     headless_mode = os.environ.get("HEADLESS", "false").lower() == "true"
     
     with sync_playwright() as p:
@@ -65,7 +64,7 @@ def main():
                 ]
             )
         except Exception as e:
-            print(f"Failed to launch with headless={headless_mode}, falling back to headless=True: {e}")
+            print(f"Headless launch fallback due to: {e}")
             browser = p.chromium.launch(
                 headless=True,
                 args=[
@@ -85,7 +84,7 @@ def main():
         page = context.new_page()
         page.set_default_timeout(60000)
         
-        # Anti-detection stealth injections
+        # Inject standard stealth scripts
         page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
             window.chrome = { runtime: {} };
@@ -97,49 +96,47 @@ def main():
         page.goto(site_url, wait_until="domcontentloaded", timeout=60000)
         user_agent = page.evaluate("navigator.userAgent")
         
-        time.sleep(3)
+        # Wait up to 15 seconds for turnstile iframe or button status
+        print("Waiting for Turnstile widget to load...")
+        time.sleep(5)
         
-        # Check if Turnstile iframe appears and attempt interaction
-        print("Checking for Cloudflare Turnstile widget...")
-        try:
-            iframe_element = page.wait_for_selector("iframe[src*='challenges.cloudflare.com']", timeout=10000)
-            if iframe_element:
-                print("Turnstile iframe detected. Attempting click...")
-                time.sleep(2)
-                box = iframe_element.bounding_box()
-                if box:
-                    # Click near center-left where the Turnstile checkbox resides
-                    page.mouse.click(box["x"] + 30, box["y"] + (box["height"] / 2))
-        except Exception as e:
-            print(f"Turnstile widget detection note: {e}")
-            
-        # Poll for button unlock (Turnstile solution)
         solved_natively = False
-        print("Waiting for Turnstile verification...")
-        for _ in range(12):
+        for _ in range(10):
             btn = page.query_selector("#create-btn")
             if btn and not page.eval_on_selector("#create-btn", "el => el.disabled"):
                 print("Turnstile verified natively in browser!")
                 solved_natively = True
                 break
+            
+            # Try clicking Turnstile iframe box if found
+            try:
+                frames = page.frames
+                for f in frames:
+                    if "challenges.cloudflare.com" in f.url:
+                        f.click("body", timeout=2000)
+                        break
+            except Exception:
+                pass
             time.sleep(1)
 
         if not solved_natively:
-            print("Turnstile not solved natively. Using 2captcha...")
+            print("Turnstile not solved natively. Requesting solution token from 2captcha...")
             if not api_key:
                 print("Error: TWOCAPTCHA_API_KEY environment variable missing.")
                 sys.exit(1)
                 
             token = solve_turnstile_2captcha(sitekey, site_url, user_agent, api_key)
             
+            print("Injecting 2captcha token into Turnstile form...")
             page.evaluate("""(token) => {
-                let inputs = document.querySelectorAll('input[name="cf-turnstile-response"]');
+                const form = document.querySelector('form');
+                let inputs = form.querySelectorAll('input[name="cf-turnstile-response"]');
                 if (inputs.length === 0) {
                     let input = document.createElement('input');
                     input.type = 'hidden';
                     input.name = 'cf-turnstile-response';
                     input.value = token;
-                    document.querySelector('form').appendChild(input);
+                    form.appendChild(input);
                 } else {
                     inputs.forEach(i => i.value = token);
                 }
@@ -150,23 +147,25 @@ def main():
                 if (waitMsg) waitMsg.style.display = 'none';
             }""", token)
 
-        print("Submitting form and waiting for navigation...")
-        try:
-            with page.expect_navigation(wait_until="domcontentloaded", timeout=30000):
-                page.click("#create-btn")
-        except Exception as e:
-            print(f"Navigation expectation note: {e}")
+        print("Submitting form via document.querySelector('form').submit()...")
+        with page.expect_navigation(wait_until="domcontentloaded", timeout=30000):
+            page.evaluate("document.querySelector('form').submit()")
             
-        print(f"URL after form submit: {page.url}")
+        print(f"URL after form submission: {page.url}")
         
-        # Extract IPTV credentials
+        # Check if page auto-redirected or requires explicit navigation
+        if "action=view" not in page.url:
+            print("Checking if credentials session was established...")
+            page.goto("https://freeiptv2023-d.ottc.xyz/index.php?action=view", wait_until="domcontentloaded")
+            print(f"URL after navigating to action=view: {page.url}")
+            
         try:
             page.wait_for_selector("#accUser", timeout=20000)
             new_username = page.input_value("#accUser").strip()
             new_password = page.input_value("#accPass").strip()
             print(f"Successfully retrieved IPTV credentials -> Username: {new_username}, Password: {new_password}")
         except Exception:
-            print(f"Error: Failed to find #accUser element. Final URL: {page.url}")
+            print(f"Error: Failed to find #accUser element. Current URL: {page.url}")
             print("Page Title:", page.title())
             print("Page Snippet:\n", page.content()[:1500])
             browser.close()
