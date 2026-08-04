@@ -53,27 +53,29 @@ def main():
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
         page = context.new_page()
+        page.set_default_timeout(60000)
         
         print(f"Navigating to {site_url}...")
-        page.goto(site_url, wait_until="networkidle")
+        # Use domcontentloaded to prevent networkidle timeouts from persistent background requests
+        page.goto(site_url, wait_until="domcontentloaded", timeout=60000)
         
-        # Wait up to 10 seconds to see if Turnstile auto-solves in real browser
+        # Wait up to 10 seconds to check if Turnstile auto-verifies
         auto_solved = False
         try:
             page.wait_for_selector("#create-btn:not([disabled])", timeout=10000)
             print("Turnstile auto-verified by browser!")
             auto_solved = True
         except Exception:
-            print("Turnstile did not auto-solve within 10s. Falling back to 2captcha...")
+            print("Turnstile did not auto-solve within 10s. Solved via 2captcha...")
 
         if not auto_solved:
             if not api_key:
-                print("Error: TWOCAPTCHA_API_KEY environment variable missing and Turnstile required manual solve.")
+                print("Error: TWOCAPTCHA_API_KEY environment variable missing.")
                 sys.exit(1)
                 
             token = solve_turnstile_2captcha(sitekey, site_url, api_key)
             
-            # Inject token into Turnstile form input and trigger callback / submit form
+            # Inject token into DOM and enable submit button
             page.evaluate("""(token) => {
                 let input = document.querySelector('input[name="cf-turnstile-response"]');
                 if (!input) {
@@ -89,9 +91,8 @@ def main():
         print("Clicking submit button...")
         page.click("#create-btn")
         
-        # Wait for redirect to credentials view page
         print("Waiting for credentials page to load...")
-        page.wait_for_selector("#accUser", timeout=20000)
+        page.wait_for_selector("#accUser", timeout=30000)
         
         new_username = page.input_value("#accUser").strip()
         new_password = page.input_value("#accPass").strip()
@@ -100,7 +101,7 @@ def main():
         
         browser.close()
 
-    # Update lit.m3u file
+    # Update playlist file
     m3u_path = os.path.join("languages", "lit.m3u")
     if not os.path.exists(m3u_path):
         if os.path.exists("lit.m3u"):
