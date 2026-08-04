@@ -58,6 +58,7 @@ def main():
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
+                "--window-size=1280,720",
             ]
         )
             
@@ -82,10 +83,29 @@ def main():
         page.goto(site_url, wait_until="domcontentloaded", timeout=60000)
         user_agent = page.evaluate("navigator.userAgent")
         
-        time.sleep(3)
-        
+        print("Waiting for Cloudflare Turnstile widget to load...")
         solved_natively = False
-        for _ in range(8):
+        
+        # 1. Wait up to 25 seconds for Turnstile iframe to render
+        try:
+            iframe_selector = "iframe[src*='challenges.cloudflare.com']"
+            page.wait_for_selector(iframe_selector, timeout=25000)
+            print("Turnstile iframe rendered! Clicking checkbox...")
+            time.sleep(2)
+            
+            # Click Turnstile iframe
+            frame_locator = page.frame_locator(iframe_selector)
+            try:
+                frame_locator.locator("input[type='checkbox']").click(timeout=3000)
+            except Exception:
+                frame_locator.locator("body").click(timeout=3000)
+                
+            print("Clicked Turnstile checkbox. Waiting for verification...")
+        except Exception as e:
+            print(f"Turnstile iframe rendering note: {e}")
+            
+        # 2. Wait up to 15 seconds for button to become enabled natively
+        for _ in range(15):
             btn = page.query_selector("#create-btn")
             if btn and not page.eval_on_selector("#create-btn", "el => el.disabled"):
                 print("Turnstile verified natively!")
@@ -93,108 +113,57 @@ def main():
                 break
             time.sleep(1)
 
+        # 3. Fallback to 2captcha if native verification did not unlock button
         if not solved_natively:
-            print("Requesting token from 2captcha...")
+            print("Turnstile not solved natively. Requesting token from 2captcha...")
             if not api_key:
                 print("Error: TWOCAPTCHA_API_KEY environment variable missing.")
                 sys.exit(1)
                 
             token = solve_turnstile_2captcha(sitekey, site_url, user_agent, api_key)
             
-            # Submit POST request directly via fetch() from page context to capture exact response
-            print("Submitting Turnstile token via fetch() API in browser...")
-            fetch_result = page.evaluate("""async (token) => {
-                const formData = new URLSearchParams();
-                formData.append('cf-turnstile-response', token);
-                
-                const response = await fetch('/index.php', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                    },
-                    body: formData.toString(),
-                    redirect: 'follow'
-                });
-                
-                const text = await response.text();
-                return {
-                    status: response.status,
-                    url: response.url,
-                    text: text
-                };
-            }""", token)
-            
-            print(f"Fetch Response Status: {fetch_result['status']}, Final URL: {fetch_result['url']}")
-            
-            # Check if fetch response contains IPTV credentials directly
-            if "id=\"accUser\"" in fetch_result['text'] or "accUser" in fetch_result['text']:
-                print("Credentials found in fetch response HTML!")
-                html_content = fetch_result['text']
-                
-                # Parse HTML content directly
-                user_match = re.search(r'id="accUser"\s+value="([^"]+)"', html_content)
-                pass_match = re.search(r'id="accPass"\s+value="([^"]+)"', html_content)
-                
-                if user_match and pass_match:
-                    new_username = user_match.group(1).strip()
-                    new_password = pass_match.group(1).strip()
-                    print(f"Successfully retrieved IPTV credentials -> Username: {new_username}, Password: {new_password}")
-                    browser.close()
-                    
-                    # Update lit.m3u playlist file
-                    m3u_path = os.path.join("languages", "lit.m3u")
-                    if not os.path.exists(m3u_path):
-                        if os.path.exists("lit.m3u"):
-                            m3u_path = "lit.m3u"
-                        else:
-                            print(f"Error: {m3u_path} not found.")
-                            sys.exit(1)
-                            
-                    with open(m3u_path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                        
-                    pattern = r"(http://freeiptv\.ottc\.xyz:\d+/live/)[^/]+/[^/]+/"
-                    replacement = rf"\g<1>{new_username}/{new_password}/"
-                    updated_content = re.sub(pattern, replacement, content)
-                    
-                    param_pattern = r"(freeiptv\.ottc\.xyz:\d+/get\.php\?username=)[^&]+(&password=)[^&]+"
-                    updated_content = re.sub(param_pattern, rf"\g<1>{new_username}\g<2>{new_password}", updated_content)
-                    
-                    with open(m3u_path, "w", encoding="utf-8") as f:
-                        f.write(updated_content)
-                        
-                    print(f"Successfully updated credentials in {m3u_path}")
-                    sys.exit(0)
-            
-            # If not in fetch response, set token in DOM and click button
+            print("Injecting 2captcha token into form...")
             page.evaluate("""(token) => {
-                let input = document.querySelector('input[name="cf-turnstile-response"]');
-                if (!input) {
-                    input = document.createElement('input');
+                const form = document.querySelector('form');
+                let inputs = form.querySelectorAll('input[name="cf-turnstile-response"]');
+                if (inputs.length === 0) {
+                    let input = document.createElement('input');
                     input.type = 'hidden';
                     input.name = 'cf-turnstile-response';
-                    document.querySelector('form').appendChild(input);
+                    input.value = token;
+                    form.appendChild(input);
+                } else {
+                    inputs.forEach(i => i.value = token);
                 }
-                input.value = token;
-                document.querySelector('#create-btn').removeAttribute('disabled');
+                
+                const btn = document.querySelector('#create-btn');
+                if (btn) btn.removeAttribute('disabled');
+                const waitMsg = document.querySelector('#please-wait');
+                if (waitMsg) waitMsg.style.display = 'none';
             }""", token)
-            
-            page.click("#create-btn")
-            time.sleep(3)
 
-        # Fallback check
+        print("Submitting form...")
         try:
-            page.wait_for_selector("#accUser", timeout=15000)
+            with page.expect_navigation(wait_until="domcontentloaded", timeout=30000):
+                page.click("#create-btn")
+        except Exception as e:
+            print(f"Navigation note: {e}")
+            
+        print(f"URL after form submission: {page.url}")
+        
+        # Verify if accUser credentials element is present
+        try:
+            page.wait_for_selector("#accUser", timeout=20000)
             new_username = page.input_value("#accUser").strip()
             new_password = page.input_value("#accPass").strip()
             print(f"Successfully retrieved IPTV credentials -> Username: {new_username}, Password: {new_password}")
         except Exception:
-            # Save diagnostic files for GitHub Artifacts
             print("Saving error_page.png and error_page.html for debugging...")
             page.screenshot(path="error_page.png")
             with open("error_page.html", "w", encoding="utf-8") as f:
                 f.write(page.content())
             print(f"Error: Failed to find #accUser element. Current URL: {page.url}")
+            print("Page Title:", page.title())
             browser.close()
             sys.exit(1)
             
