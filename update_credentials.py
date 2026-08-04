@@ -4,6 +4,7 @@ import sys
 import time
 import requests
 from playwright.sync_api import sync_playwright
+from playwright_stealth import stealth_sync
 
 def solve_turnstile_2captcha(sitekey, page_url, user_agent, api_key):
     print("Submitting Turnstile challenge to 2captcha...")
@@ -48,7 +49,7 @@ def main():
     sitekey = "0x4AAAAAAA_Qtby-wpbozX7J"
     
     with sync_playwright() as p:
-        print("Launching Chromium browser...")
+        print("Launching Chromium browser with stealth...")
         browser = p.chromium.launch(
             headless=True,
             args=[
@@ -65,16 +66,12 @@ def main():
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             viewport={"width": 1280, "height": 720},
-            device_scale_factor=1,
+            locale="en-US",
+            timezone_id="Europe/Vilnius"
         )
         page = context.new_page()
+        stealth_sync(page)
         page.set_default_timeout(60000)
-        
-        # Mask navigator.webdriver
-        page.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            window.navigator.chrome = { runtime: {} };
-        """)
         
         print(f"Navigating to {site_url}...")
         page.goto(site_url, wait_until="domcontentloaded", timeout=60000)
@@ -82,34 +79,33 @@ def main():
         
         time.sleep(3)
         
-        # Attempt to click Turnstile iframe directly
-        print("Attempting to interact with Turnstile iframe...")
+        print("Waiting for Turnstile widget...")
         try:
-            for frame in page.frames:
-                if "challenges.cloudflare.com" in frame.url:
-                    print("Found Turnstile iframe, clicking body/checkbox...")
-                    frame.click("body", timeout=5000)
-                    break
+            iframe_locator = page.frame_locator("#freeiptv-turnstile iframe, iframe[src*='challenges.cloudflare.com']")
+            if iframe_locator:
+                print("Clicking Turnstile checkbox inside iframe...")
+                iframe_locator.locator("body").click(timeout=5000)
         except Exception as e:
             print(f"Turnstile iframe click note: {e}")
             
-        # Check if button becomes enabled
         solved_natively = False
-        try:
-            page.wait_for_selector("#create-btn:not([disabled])", timeout=12000)
-            print("Turnstile verified natively in browser!")
-            solved_natively = True
-        except Exception:
-            print("Turnstile not solved natively within timeout. Using 2captcha...")
+        print("Waiting for Turnstile to verify and unlock button...")
+        for _ in range(15):
+            btn = page.query_selector("#create-btn")
+            if btn and not page.eval_on_selector("#create-btn", "el => el.disabled"):
+                print("Turnstile verified natively in browser!")
+                solved_natively = True
+                break
+            time.sleep(1)
 
         if not solved_natively:
+            print("Turnstile not solved natively. Requesting token from 2captcha...")
             if not api_key:
                 print("Error: TWOCAPTCHA_API_KEY environment variable missing.")
                 sys.exit(1)
                 
             token = solve_turnstile_2captcha(sitekey, site_url, user_agent, api_key)
             
-            # Inject token into hidden input and enable button
             page.evaluate("""(token) => {
                 let input = document.querySelector('input[name="cf-turnstile-response"]');
                 if (!input) {
@@ -122,20 +118,16 @@ def main():
                 
                 const btn = document.querySelector('#create-btn');
                 if (btn) btn.removeAttribute('disabled');
+                const waitMsg = document.querySelector('#please-wait');
+                if (waitMsg) waitMsg.style.display = 'none';
             }""", token)
 
         print("Clicking submit button...")
         page.click("#create-btn")
         
-        print("Waiting for credentials page...")
-        time.sleep(5)
-        
-        if "action=view" not in page.url:
-            print(f"URL is currently {page.url}, attempting navigation to index.php?action=view...")
-            page.goto("https://freeiptv2023-d.ottc.xyz/index.php?action=view", wait_until="domcontentloaded")
-
+        print("Waiting for credentials page (#accUser)...")
         try:
-            page.wait_for_selector("#accUser", timeout=20000)
+            page.wait_for_selector("#accUser", timeout=25000)
             new_username = page.input_value("#accUser").strip()
             new_password = page.input_value("#accPass").strip()
             print(f"Successfully retrieved IPTV credentials -> Username: {new_username}, Password: {new_password}")
