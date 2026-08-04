@@ -71,7 +71,7 @@ def main():
         page = context.new_page()
         page.set_default_timeout(60000)
         
-        # Inject standard stealth scripts directly
+        # Inject standard browser evasions
         page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
             window.navigator.chrome = { runtime: {} };
@@ -83,19 +83,23 @@ def main():
         page.goto(site_url, wait_until="domcontentloaded", timeout=60000)
         user_agent = page.evaluate("navigator.userAgent")
         
-        time.sleep(3)
-        
-        print("Waiting for Turnstile widget...")
-        try:
-            iframe = page.frame_locator("#freeiptv-turnstile iframe, iframe[src*='challenges.cloudflare.com']")
-            if iframe:
-                print("Clicking Turnstile checkbox inside iframe...")
-                iframe.locator("body").click(timeout=5000)
-        except Exception as e:
-            print(f"Turnstile iframe click note: {e}")
-            
+        print("Waiting for Turnstile iframe...")
         solved_natively = False
-        print("Waiting for Turnstile to verify and unlock button...")
+        try:
+            iframe_selector = "#freeiptv-turnstile iframe, iframe[src*='challenges.cloudflare.com']"
+            page.wait_for_selector(iframe_selector, timeout=15000)
+            time.sleep(2)
+            
+            box = page.locator(iframe_selector).first.bounding_box()
+            if box:
+                click_x = box["x"] + 35
+                click_y = box["y"] + (box["height"] / 2)
+                print(f"Clicking Turnstile checkbox at ({click_x}, {click_y})...")
+                page.mouse.click(click_x, click_y)
+        except Exception as e:
+            print(f"Native Turnstile click attempt note: {e}")
+            
+        print("Waiting for Turnstile verification...")
         for _ in range(15):
             btn = page.query_selector("#create-btn")
             if btn and not page.eval_on_selector("#create-btn", "el => el.disabled"):
@@ -129,9 +133,18 @@ def main():
             }""", token)
 
         print("Clicking submit button...")
-        page.click("#create-btn")
+        try:
+            with page.expect_navigation(wait_until="domcontentloaded", timeout=30000):
+                page.click("#create-btn")
+        except Exception as e:
+            print(f"Navigation warning: {e}")
+            
+        print(f"Current URL after submit: {page.url}")
         
-        print("Waiting for credentials page (#accUser)...")
+        if "action=view" not in page.url:
+            print("Navigating to index.php?action=view...")
+            page.goto("https://freeiptv2023-d.ottc.xyz/index.php?action=view", wait_until="domcontentloaded")
+
         try:
             page.wait_for_selector("#accUser", timeout=25000)
             new_username = page.input_value("#accUser").strip()
