@@ -1,131 +1,122 @@
 import os
 import re
+import sys
 import time
 import requests
 from bs4 import BeautifulSoup
 
-BASE_URL = "https://freeiptv2023-d.ottc.xyz/index.php"
-M3U_FILE = "languages/lit.m3u"
-
-API_KEY = os.environ["TWOCAPTCHA_API_KEY"]
-
-
-session = requests.Session()
-session.headers.update({
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 Chrome/138 Safari/537.36"
-    )
-})
-
-
-def get_sitekey():
-    r = session.get(BASE_URL, timeout=30)
-    r.raise_for_status()
-
-    m = re.search(r'sitekey:\s*"([^"]+)"', r.text)
-    if not m:
-        raise RuntimeError("Unable to locate Turnstile sitekey")
-
-    return m.group(1)
-
-
-def solve_turnstile(sitekey):
-    print("Submitting captcha...")
-
-    r = requests.post(
-        "https://2captcha.com/in.php",
-        data={
-            "key": API_KEY,
-            "method": "turnstile",
-            "sitekey": sitekey,
-            "pageurl": BASE_URL,
-            "json": 1,
-        },
-        timeout=30,
-    ).json()
-
-    if r["status"] != 1:
-        raise RuntimeError(r)
-
-    captcha_id = r["request"]
-
-    print("Waiting for solution...")
-
-    while True:
+def solve_turnstile(sitekey, page_url, api_key):
+    print(f"Submitting Turnstile challenge to 2captcha...")
+    in_url = "https://2captcha.com/in.php"
+    payload = {
+        "key": api_key,
+        "method": "turnstile",
+        "sitekey": sitekey,
+        "pageurl": page_url,
+        "json": 1
+    }
+    r = requests.post(in_url, data=payload)
+    res = r.json()
+    if res.get("status") != 1:
+        raise Exception(f"Failed to submit to 2captcha: {res}")
+    
+    captcha_id = res["request"]
+    print(f"Captcha task submitted ID: {captcha_id}. Waiting for solution...")
+    
+    res_url = "https://2captcha.com/res.php"
+    for _ in range(30):
         time.sleep(5)
-
-        r = requests.get(
-            "https://2captcha.com/res.php",
-            params={
-                "key": API_KEY,
-                "action": "get",
-                "id": captcha_id,
-                "json": 1,
-            },
-            timeout=30,
-        ).json()
-
-        if r["status"] == 1:
-            return r["request"]
-
-        if r["request"] != "CAPCHA_NOT_READY":
-            raise RuntimeError(r)
-
-
-def create_account(token):
-    r = session.post(
-        BASE_URL,
-        data={
-            "cf-turnstile-response": token
-        },
-        allow_redirects=True,
-        timeout=60,
-    )
-
-    r.raise_for_status()
-
-    soup = BeautifulSoup(r.text, "lxml")
-
-    username = soup.select_one("#accUser")["value"]
-    password = soup.select_one("#accPass")["value"]
-
-    return username, password
-
-
-def update_playlist(username, password):
-    with open(M3U_FILE, "r", encoding="utf-8") as f:
-        content = f.read()
-
-    new_content = re.sub(
-        r"http://freeiptv\.ottc\.xyz:80/live/\d+/\d+/",
-        f"http://freeiptv.ottc.xyz:80/live/{username}/{password}/",
-        content,
-    )
-
-    if new_content == content:
-        print("No changes")
-        return False
-
-    with open(M3U_FILE, "w", encoding="utf-8") as f:
-        f.write(new_content)
-
-    print("Playlist updated")
-    return True
-
+        r = requests.get(res_url, params={
+            "key": api_key,
+            "action": "get",
+            "id": captcha_id,
+            "json": 1
+        })
+        res = r.json()
+        if res.get("status") == 1:
+            print("Captcha solved successfully!")
+            return res["request"]
+        elif res.get("request") != "CAPCHA_NOT_READY":
+            raise Exception(f"2captcha error: {res}")
+    
+    raise Exception("2captcha timeout waiting for token.")
 
 def main():
-    sitekey = get_sitekey()
-
-    token = solve_turnstile(sitekey)
-
-    username, password = create_account(token)
-
-    print(username)
-    print(password)
-
-    update_playlist(username, password)
-
+    api_key = os.environ.get("TWOCAPTCHA_API_KEY")
+    if not api_key:
+        print("Error: TWOCAPTCHA_API_KEY environment variable is missing.")
+        sys.exit(1)
+        
+    site_url = "https://freeiptv2023-d.ottc.xyz/index.php"
+    sitekey = "0x4AAAAAAA_Qtby-wpbozX7J"
+    
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+    })
+    
+    # Initial GET to establish session cookies
+    print("Fetching initial page...")
+    session.get(site_url)
+    
+    # Solve Cloudflare Turnstile CAPTCHA
+    token = solve_turnstile(sitekey, site_url, api_key)
+    
+    # Post form payload
+    print("Submitting CAPTCHA response token...")
+    post_data = {
+        "cf-turnstile-response": token
+    }
+    
+    response = session.post(site_url, data=post_data)
+    
+    # Fetch view page if redirect not automatically followed to view
+    if "action=view" not in response.url:
+        response = session.get("https://freeiptv2023-d.ottc.xyz/index.php?action=view")
+        
+    soup = BeautifulSoup(response.text, "html.parser")
+    user_elem = soup.find("input", {"id": "accUser"})
+    pass_elem = soup.find("input", {"id": "accPass"})
+    
+    if not user_elem or not pass_elem:
+        print("Failed to locate username or password on the response page.")
+        print("Page snippet:", response.text[:1000])
+        sys.exit(1)
+        
+    new_username = user_elem.get("value", "").strip()
+    new_password = pass_elem.get("value", "").strip()
+    
+    print(f"Obtained IPTV Credentials - Username: {new_username}, Password: {new_password}")
+    
+    # Update lit.m3u file
+    m3u_path = os.path.join("languages", "lit.m3u")
+    if not os.path.exists(m3u_path):
+        # Fallback to local path if directly in working dir
+        if os.path.exists("lit.m3u"):
+            m3u_path = "lit.m3u"
+        else:
+            print(f"Error: {m3u_path} not found.")
+            sys.exit(1)
+            
+    with open(m3u_path, "r", encoding="utf-8") as f:
+        content = f.read()
+        
+    # Regex to replace username and password in freeiptv links
+    # Target structure: http://freeiptv.ottc.xyz:80/live/<USERNAME>/<PASSWORD>/<STREAM_ID>.ts
+    pattern = r"(http://freeiptv\.ottc\.xyz:\d+/live/)[^/]+/[^/]+/"
+    replacement = rf"\g<1>{new_username}/{new_password}/"
+    
+    updated_content = re.sub(pattern, replacement, content)
+    
+    # Also update any m3u query param URLs if present (e.g. get.php?username=...&password=...)
+    param_pattern = r"(freeiptv\.ottc\.xyz:\d+/get\.php\?username=)[^&]+(&password=)[^&]+"
+    updated_content = re.sub(param_pattern, rf"\g<1>{new_username}\g<2>{new_password}", updated_content)
+    
+    with open(m3u_path, "w", encoding="utf-8") as f:
+        f.write(updated_content)
+        
+    print(f"Successfully updated credentials in {m3u_path}")
 
 if __name__ == "__main__":
     main()
