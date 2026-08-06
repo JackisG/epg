@@ -26,6 +26,7 @@
   <channel site="cgates.lt" site_id="lnk-hd" lang="lt" xmltv_id="LNK.lt@SD">LNK</channel>
   <channel site="cgates.lt" site_id="lrt-kultura-hd" lang="lt" xmltv_id="LRTPlius.lt@SD">LRT Plius</channel>
   <channel site="cgates.lt" site_id="lrt-televizija-hd" lang="lt" xmltv_id="LRTTV.lt@SD">LRT Televizija</channel>
+  <channel site="cgates.lt" site_id="lrt-lituanica" lang="lt" xmltv_id="LRTLituanica.lt@SD">LRT Televizija</channel>
   <channel site="cgates.lt" site_id="marijampoles-tv" lang="lt" xmltv_id="MarijampolesTV.lt@SD">Marijampolės TV</channel>
   <channel site="cgates.lt" site_id="nastojashcheje-vremya" lang="lt" xmltv_id="CurrentTimeTV.cz@SD">Nastojashcheje Vremya</channel>
   <channel site="cgates.lt" site_id="national-geographic-hd" lang="lt" xmltv_id="">National Geographic</channel>
