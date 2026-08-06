@@ -17,21 +17,14 @@ def get_credentials():
         'url': TARGET_URL,
         'render': 'html',
         'wait_for': '#accUser',  # Wait for the username input to appear on the redirected page
-        'timeout': 60000,
+        'timeout': 90000,        # Wait up to 90 seconds for Cloudflare to solve and redirect
         'render_script': '''
-            var attempts = 0;
             var interval = setInterval(function() {
-                attempts++;
                 var btn = document.querySelector('#create-btn');
+                // Wait until the button exists and is NOT disabled by Cloudflare
                 if (btn && !btn.disabled) {
                     btn.click();
                     clearInterval(interval);
-                } else if (attempts > 10) { // Force click after 5 seconds
-                    if (btn) {
-                        btn.disabled = false;
-                        btn.click();
-                        clearInterval(interval);
-                    }
                 }
             }, 500);
         '''
@@ -58,17 +51,15 @@ def get_credentials():
         print(data)
         sys.exit(1)
 
-    # Search for the username and password pattern.
-    # This regex is much more flexible: it matches id="accUser" followed by value="..." 
-    # regardless of attribute order, spaces, or single/double quotes.
-    user_match = re.search(r'id=["\']accUser["\'][^>]*value=["\']([^"\']+)["\']', content)
-    pass_match = re.search(r'id=["\']accPass["\'][^>]*value=["\']([^"\']+)["\']', content)
+    # Bulletproof regex: finds id="accUser" and captures the value inside the adjacent quotes.
+    user_match = re.search(r'id=["\']?accUser["\']?[^>]*value=["\']?([^"\'>\s]+)', content, re.IGNORECASE)
+    pass_match = re.search(r'id=["\']?accPass["\']?[^>]*value=["\']?([^"\'>\s]+)', content, re.IGNORECASE)
 
-    # Fallback regex in case the value attribute comes BEFORE the id attribute
+    # Fallback regex in case the value attribute comes BEFORE the id attribute in the HTML
     if not user_match:
-        user_match = re.search(r'value=["\']([^"\']+)["\'][^>]*id=["\']accUser["\']', content)
+        user_match = re.search(r'value=["\']?([^"\'>\s]+)[^>]*id=["\']?accUser["\']?', content, re.IGNORECASE)
     if not pass_match:
-        pass_match = re.search(r'value=["\']([^"\']+)["\'][^>]*id=["\']accPass["\']', content)
+        pass_match = re.search(r'value=["\']?([^"\'>\s]+)[^>]*id=["\']?accPass["\']?', content, re.IGNORECASE)
 
     if user_match and pass_match:
         username = user_match.group(1)
