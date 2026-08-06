@@ -12,55 +12,64 @@ FILE_PATH = "languages/lit.m3u"
 def get_credentials():
     print("Fetching credentials via Oxylabs Web Scraper API...")
     
-    # Payload for Oxylabs.
-    # wait_for: Tells Oxylabs to wait until #accUser appears before capturing HTML.
-    # render_script: Injects a red debug banner to log the button's status, then clicks it.
     payload = {
         'source': 'universal',
         'url': TARGET_URL,
         'render': 'html',
-        'wait_for': '#accUser', 
+        'wait_for': '#oxylabs-success',  # Wait for our custom marker
+        'timeout': 60000,
         'render_script': '''
-            document.addEventListener('DOMContentLoaded', function() {
-                // Create a visible debug banner
+            function init() {
+                if (!document.body) {
+                    setTimeout(init, 100);
+                    return;
+                }
+                
                 var debugDiv = document.createElement('div');
                 debugDiv.id = 'oxylabs-debug';
-                debugDiv.style.position = 'fixed';
-                debugDiv.style.top = '0';
-                debugDiv.style.left = '0';
-                debugDiv.style.width = '100%';
-                debugDiv.style.padding = '20px';
-                debugDiv.style.background = 'red';
-                debugDiv.style.color = 'white';
-                debugDiv.style.fontSize = '24px';
-                debugDiv.style.zIndex = '99999';
-                debugDiv.innerHTML = 'OXYLABS DEBUG: Script started. Waiting for button...';
+                debugDiv.style.cssText = 'position:fixed;top:0;left:0;width:100%;padding:20px;background:red;color:white;font-size:20px;z-index:99999;';
+                debugDiv.innerHTML = 'OXYLABS DEBUG: Script started.';
                 document.body.appendChild(debugDiv);
 
                 var attempts = 0;
                 var interval = setInterval(function() {
                     attempts++;
                     var btn = document.querySelector('#create-btn');
+                    
                     if (btn) {
                         if (!btn.disabled) {
-                            debugDiv.innerHTML = 'OXYLABS DEBUG: Button enabled! Clicking... (Attempt ' + attempts + ')';
-                            btn.click();
+                            debugDiv.innerHTML = 'OXYLABS DEBUG: Button enabled! Submitting via fetch... (Attempt ' + attempts + ')';
                             clearInterval(interval);
+                            
+                            var form = document.querySelector('form');
+                            var formData = new FormData(form);
+                            
+                            fetch(window.location.href, {
+                                method: 'POST',
+                                body: formData
+                            }).then(function(res) {
+                                debugDiv.innerHTML = 'OXYLABS DEBUG: Fetch responded with ' + res.status;
+                                return res.text();
+                            }).then(function(html) {
+                                debugDiv.innerHTML = 'OXYLABS DEBUG: Got HTML. Replacing DOM...';
+                                document.documentElement.innerHTML = html;
+                                var successDiv = document.createElement('div');
+                                successDiv.id = 'oxylabs-success';
+                                successDiv.style.display = 'none';
+                                successDiv.innerHTML = 'OXYLABS SUCCESS';
+                                document.body.appendChild(successDiv);
+                            }).catch(function(err) {
+                                debugDiv.innerHTML = 'OXYLABS DEBUG: Fetch Error! ' + err.message;
+                            });
                         } else {
                             debugDiv.innerHTML = 'OXYLABS DEBUG: Button found but disabled. (Attempt ' + attempts + ')';
-                            // Fallback: force click after 15 seconds in case Turnstile callback fails
-                            if (attempts > 30) {
-                                debugDiv.innerHTML = 'OXYLABS DEBUG: Button still disabled after 15s. Forcing click!';
-                                btn.disabled = false;
-                                btn.click();
-                                clearInterval(interval);
-                            }
                         }
                     } else {
                         debugDiv.innerHTML = 'OXYLABS DEBUG: Button not found. (Attempt ' + attempts + ')';
                     }
                 }, 500);
-            });
+            }
+            init();
         '''
     }
 
