@@ -4,7 +4,6 @@ import base64
 import json
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 
 OXYLABS_USERNAME = os.environ.get("OXYLABS_USERNAME")
 OXYLABS_PASSWORD = os.environ.get("OXYLABS_PASSWORD")
@@ -17,89 +16,71 @@ API_URL = "https://realtime.oxylabs.io/v1/queries"
 AUTH_HEADER = base64.b64encode(f"{OXYLABS_USERNAME}:{OXYLABS_PASSWORD}".encode()).decode()
 
 
-def fetch_solved_page():
+def fetch_credentials_via_oxylabs():
     """
-    First request: render the page and solve Turnstile.
-    Return the HTML with the solved token and the cookies/headers for reuse.
+    Use Oxylabs to solve Turnstile, click the submit button,
+    and wait for the credentials page. Returns the final HTML.
     """
     payload = {
         "source": "universal",
         "url": INDEX_URL,
         "render": "html",
         "captcha": {"solve": True},
-        "wait_for_selector": "#create-btn:not([disabled])",
-        "wait_for_timeout": 30000
+        "follow_redirects": True,
+        "actions": [
+            # Wait for the button to become enabled (captcha solved)
+            {
+                "type": "wait_for",
+                "selector": "#create-btn:not([disabled])",
+                "timeout": 30000
+            },
+            # Click the button
+            {
+                "type": "click",
+                "selector": "#create-btn"
+            }
+        ],
+        # Wait for the credentials page to load (presence of #accUser)
+        "wait_for_selector": "#accUser",
+        "wait_for_timeout": 15000
     }
+
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Basic {AUTH_HEADER}"
     }
-    resp = requests.post(API_URL, json=payload, headers=headers, timeout=60)
-    resp.raise_for_status()
-    data = resp.json()
+
+    print("Submitting request to Oxylabs...")
+    response = requests.post(API_URL, json=payload, headers=headers, timeout=60)
+    response.raise_for_status()
+
+    data = response.json()
+    print(f"Oxylabs job status: {data.get('status')}")
+
+    # Save full response for debugging (truncated)
+    full_response = json.dumps(data, indent=2)
+    if len(full_response) > 2000:
+        print("Full response (first 2000 chars):")
+        print(full_response[:2000] + "...")
+    else:
+        print("Full response:")
+        print(full_response)
+
+    if data.get("status") != "done":
+        raise RuntimeError(f"Oxylabs job failed: {data}")
+
     results = data.get("results", [])
     if not results:
-        raise RuntimeError(f"No results from Oxylabs: {data}")
-    # Extract the content, cookies, and headers
-    result = results[0]
-    html = result.get("content")
+        raise RuntimeError("No results in Oxylabs response")
+
+    html = results[0].get("content")
     if not html:
         raise RuntimeError("No HTML content in Oxylabs response")
-    # Get the cookies from the response (set-cookie header)
-    cookies = {}
-    for cookie in result.get("_response", {}).get("cookies", []):
-        cookies[cookie["key"]] = cookie["value"]
-    # Also get the request headers to reuse
-    request_headers = result.get("_request", {}).get("headers", {})
-    return html, cookies, request_headers
 
-
-def extract_token_from_html(html):
-    """Extract the cf-turnstile-response token from the hidden input."""
-    soup = BeautifulSoup(html, "html.parser")
-    token_input = soup.find("input", {"name": "cf-turnstile-response"})
-    if token_input:
-        token = token_input.get("value", "").strip()
-        if token:
-            return token
-    raise RuntimeError("Could not extract Turnstile token from HTML")
-
-
-def submit_token_and_get_credentials(token, cookies, headers):
-    """
-    Submit the token via POST request to get the credentials page.
-    Reuse cookies and headers from the initial Oxylabs request.
-    """
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": headers.get("User-Agent", "Mozilla/5.0"),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": INDEX_URL,
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Origin": BASE_URL,
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-        "Cache-Control": "max-age=0",
-    })
-    session.cookies.update(cookies)
-    data = {"cf-turnstile-response": token}
-    # POST the token
-    resp = session.post(INDEX_URL, data=data, allow_redirects=True, timeout=30)
-    # The final URL should be /index.php?action=view
-    if "IPTV account information" not in resp.text:
-        # Maybe the redirect failed; try following manually
-        if resp.status_code in (301, 302, 303, 307, 308):
-            location = resp.headers.get("Location")
-            if location:
-                if not location.startswith(("http://", "https://")):
-                    location = urljoin(BASE_URL, location)
-                resp = session.get(location, allow_redirects=True, timeout=30)
-        # Check again
-        if "IPTV account information" not in resp.text:
-            snippet = resp.text[:500]
-            raise RuntimeError(f"Credentials page not reached. Snippet: {snippet}")
-    return resp.text
+    # Log a snippet of the final HTML
+    print("Final HTML snippet (first 500 chars):")
+    print(html[:500] + "...")
+    return html
 
 
 def parse_credentials(html):
@@ -107,7 +88,7 @@ def parse_credentials(html):
     user_input = soup.find("input", {"id": "accUser"})
     pass_input = soup.find("input", {"id": "accPass"})
     if not user_input or not pass_input:
-        raise RuntimeError("Credentials fields not found")
+        raise RuntimeError("Credentials fields not found in the final HTML")
     username = user_input.get("value", "").strip()
     password = pass_input.get("value", "").strip()
     if not username or not password:
@@ -131,16 +112,11 @@ def update_m3u_file(file_path, new_user, new_pass):
 
 
 def main():
-    print("Step 1: Solving captcha via Oxylabs...")
-    html, cookies, headers = fetch_solved_page()
-    token = extract_token_from_html(html)
-    print(f"Token extracted: {token[:30]}...")
+    print("Fetching credentials via Oxylabs (full automation)...")
+    html = fetch_credentials_via_oxylabs()
 
-    print("Step 2: Submitting token to get credentials...")
-    credentials_html = submit_token_and_get_credentials(token, cookies, headers)
-
-    username, password = parse_credentials(credentials_html)
-    print(f"New credentials: {username} / {password}")
+    username, password = parse_credentials(html)
+    print(f"✅ New credentials: {username} / {password}")
 
     m3u_path = "languages/lit.m3u"
     if not os.path.isfile(m3u_path):
