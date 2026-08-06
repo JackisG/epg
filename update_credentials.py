@@ -13,23 +13,11 @@ def get_credentials():
     print("Fetching credentials via Oxylabs Web Scraper API...")
     
     # Payload for Oxylabs. We use 'render': 'html' to execute JavaScript.
-    # We inject a script to click any button (handling the invisible captcha/get link button)
-    # and add a wait time to allow the new credentials to load into the DOM.
     payload = {
         'source': 'universal',
         'url': TARGET_URL,
         'render': 'html',
-        'wait': 7000,  # Wait 7 seconds after script execution
-        'render_script': '''
-            document.addEventListener('DOMContentLoaded', function() {
-                // Attempt to click button, input submit, or elements with class 'btn'
-                var btn = document.querySelector('button, input[type="submit"], .btn, a[href*="freeiptv"]');
-                if (btn) {
-                    console.log("Clicking button...");
-                    btn.click();
-                }
-            });
-        '''
+        'wait': 7000,  # Wait 7 seconds to allow page to fully load credentials
     }
 
     try:
@@ -55,23 +43,23 @@ def get_credentials():
         sys.exit(1)
 
     # Search for the username and password pattern in the scraped HTML.
-    # Based on your example, we are looking for a pattern like 108465849651/328455351894
-    # Adjust the regex if the site formats the credentials differently (e.g. labeled "Username: 123")
-    match = re.search(r'(\d{10,15})/(\d{10,15})', content)
-    
-    # Fallback: if it's not in URL format, look for generic numbers if labeled
-    if not match:
-        match = re.search(r'Username.*?(\d{10,15}).*?Password.*?(\d{10,15})', content, re.IGNORECASE | re.DOTALL)
+    # Based on your attached file, we are looking for:
+    # <input type="text" class="form-control" id="accUser" value="789097059513" readonly="">
+    # <input type="text" class="form-control" id="accPass" value="620130485123" readonly="">
+    user_match = re.search(r'id="accUser"[^>]*value="([^"]+)"', content)
+    pass_match = re.search(r'id="accPass"[^>]*value="([^"]+)"', content)
 
-    if match:
-        username = match.group(1)
-        password = match.group(2)
+    if user_match and pass_match:
+        username = user_match.group(1)
+        password = pass_match.group(1)
         print(f"Successfully extracted credentials -> User: {username}, Pass: {password}")
         return username, password
     else:
         print("Failed to find credentials in the scraped page content.")
-        # Uncomment the next line to debug the HTML returned by Oxylabs in GitHub Actions logs
-        # print("HTML CONTENT:\n", content[:2000])
+        print("Printing HTML content for debugging purposes:\n")
+        print("------ START HTML CONTENT ------")
+        print(content)
+        print("------ END HTML CONTENT ------\n")
         sys.exit(1)
 
 def update_m3u_file(new_username, new_password):
