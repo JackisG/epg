@@ -17,40 +17,47 @@ def get_credentials():
         'url': TARGET_URL,
         'render': 'html',
         'stealth': True,
-        'wait': 15000,  # Wait exactly 15 seconds for script execution
+        'wait': 15000,  # Wait 15 seconds for script execution
         'render_script': '''
-            var debugDiv = document.createElement('div');
-            debugDiv.style.cssText = 'position:fixed;top:0;left:0;width:100%;padding:20px;background:red;color:white;font-size:24px;z-index:99999;';
-            debugDiv.innerHTML = 'OXYLABS DEBUG: Script attached.';
-            document.body.appendChild(debugDiv);
-
-            // Use window.name to track state across page reloads
-            if (window.name === 'oxylabs_clicked') {
-                debugDiv.innerHTML = 'OXYLABS DEBUG: Already clicked. Server rejected empty token.';
-            } else {
-                var interval = setInterval(function() {
-                    var tokenInput = document.querySelector('input[name="cf-turnstile-response"]');
-                    var token = tokenInput ? tokenInput.value : "NOT FOUND";
-                    debugDiv.innerHTML = 'OXYLABS DEBUG: Waiting for token... (' + token.substring(0, 10) + ')';
-                    
-                    if (token && token.length > 10) {
-                        clearInterval(interval);
-                        debugDiv.innerHTML = 'OXYLABS DEBUG: Token found! Clicking...';
-                        window.name = 'oxylabs_clicked';
-                        var btn = document.querySelector('#create-btn');
-                        if (btn) { btn.disabled = false; btn.click(); }
+            (function() {
+                function init() {
+                    if (!document.body) {
+                        setTimeout(init, 50);
+                        return;
                     }
-                }, 500);
+                    
+                    var debugDiv = document.createElement('div');
+                    debugDiv.id = 'oxylabs-debug';
+                    debugDiv.style.cssText = 'position:fixed;top:0;left:0;width:100%;padding:20px;background:red;color:white;font-size:24px;z-index:99999;';
+                    debugDiv.innerHTML = 'OXYLABS DEBUG: Script attached.';
+                    document.body.appendChild(debugDiv);
 
-                // Force click after 8 seconds if Cloudflare refuses to solve
-                setTimeout(function() {
-                    clearInterval(interval);
-                    debugDiv.innerHTML = 'OXYLABS DEBUG: Force clicking button with empty token!';
-                    window.name = 'oxylabs_clicked';
-                    var btn = document.querySelector('#create-btn');
-                    if (btn) { btn.disabled = false; btn.click(); }
-                }, 8000);
-            }
+                    var attempts = 0;
+                    var interval = setInterval(function() {
+                        attempts++;
+                        var tokenInput = document.querySelector('input[name="cf-turnstile-response"]');
+                        var token = tokenInput ? tokenInput.value : "NOT FOUND";
+                        debugDiv.innerHTML = 'OXYLABS DEBUG: Attempt ' + attempts + '. Token: ' + (token ? token.substring(0, 15) : 'EMPTY');
+
+                        // If Cloudflare actually solves it
+                        if (token && token.length > 10) {
+                            debugDiv.innerHTML = 'OXYLABS DEBUG: Token found! Clicking...';
+                            clearInterval(interval);
+                            var btn = document.querySelector('#create-btn');
+                            if (btn) { btn.disabled = false; btn.click(); }
+                        }
+                        
+                        // Force click after 8 seconds (16 attempts)
+                        if (attempts === 16) {
+                            debugDiv.innerHTML = 'OXYLABS DEBUG: Force clicking button with empty token!';
+                            clearInterval(interval);
+                            var btn = document.querySelector('#create-btn');
+                            if (btn) { btn.disabled = false; btn.click(); }
+                        }
+                    }, 500);
+                }
+                init();
+            })();
         '''
     }
 
