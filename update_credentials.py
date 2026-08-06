@@ -13,11 +13,24 @@ def get_credentials():
     print("Fetching credentials via Oxylabs Web Scraper API...")
     
     # Payload for Oxylabs. We use 'render': 'html' to execute JavaScript.
+    # The render_script waits for the Cloudflare Turnstile to enable the button,
+    # clicks it, and then we wait 10 seconds for the new page to load.
     payload = {
         'source': 'universal',
         'url': TARGET_URL,
         'render': 'html',
-        'wait': 7000,  # Wait 7 seconds to allow page to fully load credentials
+        'wait': 10000,  # Wait 10 seconds after script execution
+        'render_script': '''
+            document.addEventListener('DOMContentLoaded', function() {
+                var interval = setInterval(function() {
+                    var btn = document.querySelector('#create-btn');
+                    if (btn && !btn.disabled) {
+                        btn.click();
+                        clearInterval(interval);
+                    }
+                }, 500);
+            });
+        '''
     }
 
     try:
@@ -25,7 +38,7 @@ def get_credentials():
             'https://realtime.oxylabs.io/v1/queries',
             auth=(OXYLABS_USERNAME, OXYLABS_PASSWORD),
             json=payload,
-            timeout=90
+            timeout=120
         )
         response.raise_for_status()
     except requests.exceptions.RequestException as e:
@@ -74,8 +87,6 @@ def update_m3u_file(new_username, new_password):
 
     # This regex finds URLs containing freeiptv.ottc.xyz and replaces the old numbers
     # Example: http://freeiptv.ottc.xyz:80/live/OLD_USER/OLD_PASS/47280.ts
-    # Group 1: http://freeiptv.ottc.xyz.../live/
-    # Group 2: /... (rest of the link like /47280.ts)
     pattern = r'(http[s]?://freeiptv\.ottc\.xyz[^ ]*?/live/)\d+/(\d+)(/[^ \"\'\n]*)'
     replacement = rf'\g<1>{new_username}/{new_password}\g<3>'
 
@@ -83,7 +94,6 @@ def update_m3u_file(new_username, new_password):
 
     if count == 0:
         print("WARNING: No links containing 'freeiptv.ottc.xyz' with credentials were found to replace.")
-        # Check if the links just exist without regex matches to avoid empty commits
         if "freeiptv.ottc.xyz" in content:
             print("The file contains 'freeiptv.ottc.xyz' but did not match the expected URL structure.")
     else:
