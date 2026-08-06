@@ -1,100 +1,115 @@
 #!/usr/bin/env python3
-import re
 import os
+import re
 import sys
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime
-import pytz
+
+OXYLABS_ENDPOINT = "https://realtime.oxylabs.io/v1/queries"
+TARGET_URL = "https://freeiptv2023-d.ottc.xyz"
+M3U_FILE = "languages/lit.m3u"
 
 
-def get_credentials():
-    """
-    Uses Oxylabs Browser source to load the target page, click the invisible
-    captcha button, and extract the displayed username and password.
-    """
-    oxy_user = os.environ["OXYLABS_USERNAME"]
-    oxy_pass = os.environ["OXYLABS_PASSWORD"]
-
+def fetch_credentials():
     payload = {
-        "source": "browser",
-        "url": "https://freeiptv2023-d.ottc.xyz",
-        "browser_instructions": [
-            {"type": "wait", "timeout": 5},
-            # Click the button that triggers the invisible captcha.
-            # Adjust the CSS selector if the button doesn't match.
-            {"type": "click", "selector": "button"},
-            {"type": "wait", "timeout": 5},
-        ],
+        "source": "universal",
+        "url": TARGET_URL,
+        "render": "html",
+        "geo_location": "Lithuania",
     }
 
     resp = requests.post(
-        "https://realtime.oxylabs.io/v1/queries",
-        auth=(oxy_user, oxy_pass),
+        OXYLABS_ENDPOINT,
+        auth=(os.environ["OXYLABS_USERNAME"], os.environ["OXYLABS_PASSWORD"]),
         json=payload,
         timeout=120,
     )
     resp.raise_for_status()
     data = resp.json()
 
-    # Extract the final HTML from the response
-    try:
-        html = data["results"][0]["content"]
-    except (KeyError, IndexError):
-        raise Exception("Failed to obtain page content from Oxylabs response.")
+    # Extract rendered HTML from Oxylabs response
+    html = None
+    results = data.get("results", [])
+    if results and "content" in results[0]:
+        html = results[0]["content"]
+    elif "content" in data:
+        html = data["content"]
+    else:
+        raise RuntimeError(
+            f"Unexpected Oxylabs response structure. Keys: {list(data.keys())}"
+        )
 
     soup = BeautifulSoup(html, "html.parser")
-    text = soup.get_text()
 
-    # First, look for labelled "Username" / "Password"
-    user_match = re.search(r"Username\s*[:\s]*(\d+)", text, re.IGNORECASE)
-    pass_match = re.search(r"Password\s*[:\s]*(\d+)", text, re.IGNORECASE)
+    # Primary: read the input fields
+    user_el = soup.find("input", {"id": "accUser"})
+    pass_el = soup.find("input", {"id": "accPass"})
+    username = user_el.get("value") if user_el else None
+    password = pass_el.get("value") if pass_el else None
 
-    if user_match and pass_match:
-        username = user_match.group(1)
-        password = pass_match.group(1)
-    else:
-        # Fallback: find the first two 12‑digit numbers (typical length)
-        numbers = re.findall(r"\b\d{12}\b", text)
-        if len(numbers) >= 2:
-            username = numbers[0]
-            password = numbers[1]
-        else:
-            raise Exception("Could not parse username/password from the page.")
+    # Fallback: parse username & password from the M3U link
+    if not username or not password:
+        m3u_el = soup.find("input", {"id": "m3uLink"})
+        if m3u_el:
+            m3u_url = m3u_el.get("value", "")
+            m = re.search(r"username=([^&]+)&password=([^&]+)", m3u_url)
+            if m:
+                username, password = m.group(1), m.group(2)
 
-    print(f"New credentials: username = {username}, password = {password}")
-    return username, password
+    if not username or not password:
+        # Save HTML for debugging if extraction fails
+        with open("debug_page.html", "w", encoding="utf-8") as f:
+            f.write(html)
+        raise RuntimeError(
+            "Failed to extract credentials. Saved debug_page.html for inspection."
+        )
+
+    return username.strip(), password.strip()
 
 
-def update_m3u_file(username, password):
-    """Replace all occurrences of old credentials in lit.m3u with the new ones."""
-    filepath = "languages/lit.m3u"
-    with open(filepath, "r", encoding="utf-8") as f:
+def update_m3u(new_user, new_pass):
+    if not os.path.exists(M3U_FILE):
+        raise FileNotFoundError(f"{M3U_FILE} not found in repo")
+
+    with open(M3U_FILE, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # Matches URLs like http://freeiptv.ottc.xyz:80/live/USER/PASS/stream.ts
-    pattern = r"(http://freeiptv\.ottc\.xyz:80/live/)(\d+)(/)(\d+)(/\d+\.ts)"
-    new_content = re.sub(pattern, rf"\1{username}\3{password}\5", content)
+    original = content
 
-    if new_content == content:
-        print("Credentials unchanged – nothing to commit.")
-        sys.exit(0)
+    # Replace /live/USERNAME/PASSWORD/CHANNEL_ID.ts
+    live_pattern = r"http://freeiptv\.ottc\.xyz:80/live/[^/]+/[^/]+/([^/\s]+\.ts)"
+    content = re.sub(
+        live_pattern,
+        rf"http://freeiptv.ottc.xyz:80/live/{new_user}/{new_pass}/\1",
+        content,
+    )
 
-    with open(filepath, "w", encoding="utf-8") as f:
-        f.write(new_content)
-    print("lit.m3u updated successfully.")
+    # Replace get.php links if any exist
+    get_pattern = r"http://freeiptv\.ottc\.xyz:80/get\.php\?username=[^&]+&password=[^&]+"
+    content = re.sub(
+        get_pattern,
+        f"http://freeiptv.ottc.xyz:80/get.php?username={new_user}&password={new_pass}",
+        content,
+    )
+
+    changed = content != original
+    if changed:
+        with open(M3U_FILE, "w", encoding="utf-8") as f:
+            f.write(content)
+        print(f"[OK] Updated {M3U_FILE} → {new_user} / {new_pass}")
+    else:
+        print("[INFO] No freeiptv links found or credentials already current.")
+
+    return changed
 
 
 def main():
-    # Only run at exactly 05:00 Vilnius time (handles DST)
-    tz = pytz.timezone("Europe/Vilnius")
-    now = datetime.now(tz)
-    if now.hour != 5:
-        print(f"Current Vilnius time is {now.hour}:{now.minute}, not 5:00 – exiting.")
-        sys.exit(0)
+    print("[INFO] Fetching credentials via Oxylabs...")
+    new_user, new_pass = fetch_credentials()
+    print(f"[INFO] Got username={new_user}, password={new_pass}")
 
-    user, pwd = get_credentials()
-    update_m3u_file(user, pwd)
+    update_m3u(new_user, new_pass)
+    sys.exit(0)
 
 
 if __name__ == "__main__":
