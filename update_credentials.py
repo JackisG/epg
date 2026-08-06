@@ -16,17 +16,51 @@ def get_credentials():
         'source': 'universal',
         'url': TARGET_URL,
         'render': 'html',
-        'wait_for': '#accUser',  # Wait for the username input to appear on the redirected page
-        'timeout': 90000,        # Wait up to 90 seconds for Cloudflare to solve and redirect
+        'wait_for': '#oxylabs-success',  # Wait for our custom marker
+        'timeout': 90000,
         'render_script': '''
-            var interval = setInterval(function() {
-                var btn = document.querySelector('#create-btn');
-                // Wait until the button exists and is NOT disabled by Cloudflare
-                if (btn && !btn.disabled) {
-                    btn.click();
-                    clearInterval(interval);
+            function init() {
+                if (!document.body) {
+                    setTimeout(init, 100);
+                    return;
                 }
-            }, 500);
+                
+                var debugDiv = document.createElement('div');
+                debugDiv.id = 'oxylabs-debug';
+                debugDiv.style.cssText = 'position:fixed;top:0;left:0;width:100%;padding:20px;background:red;color:white;font-size:20px;z-index:99999;';
+                debugDiv.innerHTML = 'OXYLABS DEBUG: Script started. Waiting for Turnstile token...';
+                document.body.appendChild(debugDiv);
+
+                var interval = setInterval(function() {
+                    var tokenInput = document.querySelector('input[name="cf-turnstile-response"]');
+                    
+                    if (tokenInput && tokenInput.value) {
+                        debugDiv.innerHTML = 'OXYLABS DEBUG: Token found! Submitting via fetch...';
+                        clearInterval(interval);
+                        
+                        var form = document.querySelector('form');
+                        var formData = new FormData(form);
+                        
+                        fetch(window.location.href, {
+                            method: 'POST',
+                            body: formData
+                        }).then(function(res) {
+                            debugDiv.innerHTML = 'OXYLABS DEBUG: Fetch responded with ' + res.status;
+                            return res.text();
+                        }).then(function(html) {
+                            debugDiv.innerHTML = 'OXYLABS DEBUG: Got HTML. Replacing DOM...';
+                            document.documentElement.innerHTML = html;
+                            var successDiv = document.createElement('div');
+                            successDiv.id = 'oxylabs-success';
+                            successDiv.style.display = 'none';
+                            document.body.appendChild(successDiv);
+                        }).catch(function(err) {
+                            debugDiv.innerHTML = 'OXYLABS DEBUG: Fetch Error! ' + err.message;
+                        });
+                    }
+                }, 500);
+            }
+            init();
         '''
     }
 
