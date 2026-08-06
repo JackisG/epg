@@ -13,23 +13,31 @@ def get_credentials():
     print("Fetching credentials via Oxylabs Web Scraper API...")
     
     # Payload for Oxylabs. We use 'render': 'html' to execute JavaScript.
-    # The render_script waits for the Cloudflare Turnstile to enable the button,
-    # clicks it, and then we wait 10 seconds for the new page to load.
+    # The render_script waits for the button to be enabled, then uses fetch to 
+    # submit the form in the background and replace the HTML body with the result.
     payload = {
         'source': 'universal',
         'url': TARGET_URL,
         'render': 'html',
-        'wait': 10000,  # Wait 10 seconds after script execution
+        'wait': 10000,  # Wait 10 seconds for the fetch to complete
         'render_script': '''
-            document.addEventListener('DOMContentLoaded', function() {
-                var interval = setInterval(function() {
-                    var btn = document.querySelector('#create-btn');
-                    if (btn && !btn.disabled) {
-                        btn.click();
-                        clearInterval(interval);
+            const interval = setInterval(() => {
+                const btn = document.querySelector('#create-btn');
+                if (btn && !btn.disabled) {
+                    const form = document.querySelector('form');
+                    if (form) {
+                        const formData = new FormData(form);
+                        fetch(window.location.href, {
+                            method: 'POST',
+                            body: formData
+                        }).then(res => res.text()).then(html => {
+                            // Replace the page HTML with the response containing credentials
+                            document.documentElement.innerHTML = html;
+                        }).catch(err => console.error(err));
                     }
-                }, 500);
-            });
+                    clearInterval(interval);
+                }
+            }, 500);
         '''
     }
 
@@ -56,9 +64,6 @@ def get_credentials():
         sys.exit(1)
 
     # Search for the username and password pattern in the scraped HTML.
-    # Based on your attached file, we are looking for:
-    # <input type="text" class="form-control" id="accUser" value="789097059513" readonly="">
-    # <input type="text" class="form-control" id="accPass" value="620130485123" readonly="">
     user_match = re.search(r'id="accUser"[^>]*value="([^"]+)"', content)
     pass_match = re.search(r'id="accPass"[^>]*value="([^"]+)"', content)
 
