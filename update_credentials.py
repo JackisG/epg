@@ -16,51 +16,57 @@ def get_credentials():
         'source': 'universal',
         'url': TARGET_URL,
         'render': 'html',
-        'stealth': True,  # <-- ADDED STEALTH MODE TO BYPASS CLOUDFLARE DETECTION
+        'stealth': True,
         'wait_for': '#accUser',
         'timeout': 90000,
         'render_script': '''
-            var debugDiv = document.createElement('div');
-            debugDiv.id = 'oxylabs-debug';
-            debugDiv.style.cssText = 'position:fixed;top:0;left:0;width:100%;padding:20px;background:red;color:white;font-size:24px;z-index:99999;';
-            debugDiv.innerHTML = 'OXYLABS DEBUG: Script attached.';
-            document.body.appendChild(debugDiv);
-
-            var manualRenderTried = false;
-
-            var interval = setInterval(function() {
-                var tokenInput = document.querySelector('input[name="cf-turnstile-response"]');
-                
-                if (tokenInput && tokenInput.value) {
-                    debugDiv.innerHTML = 'OXYLABS DEBUG: Token found! Force clicking button...';
-                    clearInterval(interval);
-                    
-                    var btn = document.querySelector('#create-btn');
-                    if (btn) {
-                        btn.disabled = false; 
-                        btn.click();          
+            (function() {
+                function init() {
+                    if (!document.body) {
+                        setTimeout(init, 50);
+                        return;
                     }
-                } else {
-                    debugDiv.innerHTML = 'OXYLABS DEBUG: Still waiting for token...';
                     
-                    // Fallback: If Cloudflare loaded but didn't render, we force it to render
-                    if (!manualRenderTried && typeof turnstile !== 'undefined' && document.querySelector('#freeiptv-turnstile') && document.querySelector('#freeiptv-turnstile').innerHTML === '') {
-                        debugDiv.innerHTML = 'OXYLABS DEBUG: Turnstile empty. Forcing manual render...';
-                        try {
-                            turnstile.render("#freeiptv-turnstile", {
-                                sitekey: "0x4AAAAAAA_Qtby-wpbozX7J",
-                                callback: function(token) {
-                                    document.querySelector("#create-btn").disabled = false;
-                                }
-                            });
-                            manualRenderTried = true;
-                            debugDiv.innerHTML = 'OXYLABS DEBUG: Manual render called successfully.';
-                        } catch(e) {
-                            debugDiv.innerHTML = 'OXYLABS DEBUG: Manual render error: ' + e.message;
+                    var debugDiv = document.createElement('div');
+                    debugDiv.id = 'oxylabs-debug';
+                    debugDiv.style.cssText = 'position:fixed;top:0;left:0;width:100%;padding:20px;background:red;color:white;font-size:24px;z-index:99999;';
+                    debugDiv.innerHTML = 'OXYLABS DEBUG: Script attached.';
+                    document.body.appendChild(debugDiv);
+
+                    // Simulate mouse movement to trick Cloudflare into solving
+                    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 100, clientY: 100 }));
+                    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 200, clientY: 200 }));
+
+                    var attempts = 0;
+                    var interval = setInterval(function() {
+                        attempts++;
+                        var tokenInput = document.querySelector('input[name="cf-turnstile-response"]');
+                        var currentToken = tokenInput ? tokenInput.value : "NOT FOUND";
+                        
+                        debugDiv.innerHTML = 'OXYLABS DEBUG: Attempt ' + attempts + '. Token: ' + currentToken;
+
+                        if (tokenInput && tokenInput.value) {
+                            debugDiv.innerHTML = 'OXYLABS DEBUG: Token found! Clicking button...';
+                            clearInterval(interval);
+                            
+                            var btn = document.querySelector('#create-btn');
+                            if (btn) {
+                                btn.disabled = false; 
+                                btn.click();          
+                            }
+                        } else if (attempts > 20) { // 10 seconds
+                            debugDiv.innerHTML = 'OXYLABS DEBUG: Token failed to generate. Force submitting anyway...';
+                            clearInterval(interval);
+                            var btn = document.querySelector('#create-btn');
+                            if (btn) {
+                                btn.disabled = false;
+                                btn.click();
+                            }
                         }
-                    }
+                    }, 500);
                 }
-            }, 500);
+                init();
+            })();
         '''
     }
 
