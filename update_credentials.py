@@ -17,56 +17,40 @@ def get_credentials():
         'url': TARGET_URL,
         'render': 'html',
         'stealth': True,
-        'wait_for': '#accUser',
-        'timeout': 90000,
+        'wait': 15000,  # Wait exactly 15 seconds for script execution
         'render_script': '''
-            (function() {
-                function init() {
-                    if (!document.body) {
-                        setTimeout(init, 50);
-                        return;
-                    }
+            var debugDiv = document.createElement('div');
+            debugDiv.style.cssText = 'position:fixed;top:0;left:0;width:100%;padding:20px;background:red;color:white;font-size:24px;z-index:99999;';
+            debugDiv.innerHTML = 'OXYLABS DEBUG: Script attached.';
+            document.body.appendChild(debugDiv);
+
+            // Use window.name to track state across page reloads
+            if (window.name === 'oxylabs_clicked') {
+                debugDiv.innerHTML = 'OXYLABS DEBUG: Already clicked. Server rejected empty token.';
+            } else {
+                var interval = setInterval(function() {
+                    var tokenInput = document.querySelector('input[name="cf-turnstile-response"]');
+                    var token = tokenInput ? tokenInput.value : "NOT FOUND";
+                    debugDiv.innerHTML = 'OXYLABS DEBUG: Waiting for token... (' + token.substring(0, 10) + ')';
                     
-                    var debugDiv = document.createElement('div');
-                    debugDiv.id = 'oxylabs-debug';
-                    debugDiv.style.cssText = 'position:fixed;top:0;left:0;width:100%;padding:20px;background:red;color:white;font-size:24px;z-index:99999;';
-                    debugDiv.innerHTML = 'OXYLABS DEBUG: Script attached.';
-                    document.body.appendChild(debugDiv);
+                    if (token && token.length > 10) {
+                        clearInterval(interval);
+                        debugDiv.innerHTML = 'OXYLABS DEBUG: Token found! Clicking...';
+                        window.name = 'oxylabs_clicked';
+                        var btn = document.querySelector('#create-btn');
+                        if (btn) { btn.disabled = false; btn.click(); }
+                    }
+                }, 500);
 
-                    // Simulate mouse movement to trick Cloudflare into solving
-                    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 100, clientY: 100 }));
-                    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 200, clientY: 200 }));
-
-                    var attempts = 0;
-                    var interval = setInterval(function() {
-                        attempts++;
-                        var tokenInput = document.querySelector('input[name="cf-turnstile-response"]');
-                        var currentToken = tokenInput ? tokenInput.value : "NOT FOUND";
-                        
-                        debugDiv.innerHTML = 'OXYLABS DEBUG: Attempt ' + attempts + '. Token: ' + currentToken;
-
-                        if (tokenInput && tokenInput.value) {
-                            debugDiv.innerHTML = 'OXYLABS DEBUG: Token found! Clicking button...';
-                            clearInterval(interval);
-                            
-                            var btn = document.querySelector('#create-btn');
-                            if (btn) {
-                                btn.disabled = false; 
-                                btn.click();          
-                            }
-                        } else if (attempts > 20) { // 10 seconds
-                            debugDiv.innerHTML = 'OXYLABS DEBUG: Token failed to generate. Force submitting anyway...';
-                            clearInterval(interval);
-                            var btn = document.querySelector('#create-btn');
-                            if (btn) {
-                                btn.disabled = false;
-                                btn.click();
-                            }
-                        }
-                    }, 500);
-                }
-                init();
-            })();
+                // Force click after 8 seconds if Cloudflare refuses to solve
+                setTimeout(function() {
+                    clearInterval(interval);
+                    debugDiv.innerHTML = 'OXYLABS DEBUG: Force clicking button with empty token!';
+                    window.name = 'oxylabs_clicked';
+                    var btn = document.querySelector('#create-btn');
+                    if (btn) { btn.disabled = false; btn.click(); }
+                }, 8000);
+            }
         '''
     }
 
