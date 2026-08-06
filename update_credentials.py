@@ -16,51 +16,31 @@ def get_credentials():
         'source': 'universal',
         'url': TARGET_URL,
         'render': 'html',
-        'wait_for': '#oxylabs-success',  # Wait for our custom marker
+        'wait_for': '#accUser',  # Wait for the final redirected page to load
         'timeout': 90000,
         'render_script': '''
-            function init() {
-                if (!document.body) {
-                    setTimeout(init, 100);
-                    return;
-                }
-                
-                var debugDiv = document.createElement('div');
-                debugDiv.id = 'oxylabs-debug';
-                debugDiv.style.cssText = 'position:fixed;top:0;left:0;width:100%;padding:20px;background:red;color:white;font-size:20px;z-index:99999;';
-                debugDiv.innerHTML = 'OXYLABS DEBUG: Script started. Waiting for Turnstile token...';
-                document.body.appendChild(debugDiv);
+            var debugDiv = document.createElement('div');
+            debugDiv.id = 'oxylabs-debug';
+            debugDiv.style.cssText = 'position:fixed;top:0;left:0;width:100%;padding:20px;background:red;color:white;font-size:24px;z-index:99999;';
+            debugDiv.innerHTML = 'OXYLABS DEBUG: Script attached. Waiting for token...';
+            document.body.appendChild(debugDiv);
 
-                var interval = setInterval(function() {
-                    var tokenInput = document.querySelector('input[name="cf-turnstile-response"]');
+            var interval = setInterval(function() {
+                var tokenInput = document.querySelector('input[name="cf-turnstile-response"]');
+                
+                if (tokenInput && tokenInput.value) {
+                    debugDiv.innerHTML = 'OXYLABS DEBUG: Token found! Force clicking button...';
+                    clearInterval(interval);
                     
-                    if (tokenInput && tokenInput.value) {
-                        debugDiv.innerHTML = 'OXYLABS DEBUG: Token found! Submitting via fetch...';
-                        clearInterval(interval);
-                        
-                        var form = document.querySelector('form');
-                        var formData = new FormData(form);
-                        
-                        fetch(window.location.href, {
-                            method: 'POST',
-                            body: formData
-                        }).then(function(res) {
-                            debugDiv.innerHTML = 'OXYLABS DEBUG: Fetch responded with ' + res.status;
-                            return res.text();
-                        }).then(function(html) {
-                            debugDiv.innerHTML = 'OXYLABS DEBUG: Got HTML. Replacing DOM...';
-                            document.documentElement.innerHTML = html;
-                            var successDiv = document.createElement('div');
-                            successDiv.id = 'oxylabs-success';
-                            successDiv.style.display = 'none';
-                            document.body.appendChild(successDiv);
-                        }).catch(function(err) {
-                            debugDiv.innerHTML = 'OXYLABS DEBUG: Fetch Error! ' + err.message;
-                        });
+                    var btn = document.querySelector('#create-btn');
+                    if (btn) {
+                        btn.disabled = false; // Force enable
+                        btn.click();          // Natural form submit & redirect
                     }
-                }, 500);
-            }
-            init();
+                } else {
+                    debugDiv.innerHTML = 'OXYLABS DEBUG: Still waiting for token...';
+                }
+            }, 500);
         '''
     }
 
