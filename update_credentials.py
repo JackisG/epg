@@ -1,87 +1,143 @@
-<!DOCTYPE html><html lang="en" data-bs-theme="dark"><head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>freeiptv</title>
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
+import os
+import re
+import sys
+import requests
 
-        <link rel="preconnect" href="https://fonts.googleapis.com">
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
-        <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&amp;family=Montserrat:ital,wght@0,100..900;1,100..900&amp;display=swap" rel="stylesheet">
+# Configuration
+OXYLABS_USERNAME = os.environ.get("OXYLABS_USERNAME")
+OXYLABS_PASSWORD = os.environ.get("OXYLABS_PASSWORD")
+TARGET_URL = "https://freeiptv2023-d.ottc.xyz"
+FILE_PATH = "languages/lit.m3u"
 
-        <script src="https://cdn.jsdelivr.net/npm/iconify-icon@2.3.0/dist/iconify-icon.min.js"></script>
-        
-        <style>
-            body {
-                font-family: "Montserrat", serif;
-                font-optical-sizing: auto;
-                font-weight: 400;
-                font-style: normal;
-                margin-bottom: 4rem;
-            }
+def get_credentials():
+    print("Fetching credentials via Oxylabs Web Scraper API...")
+    
+    payload = {
+        'source': 'universal',
+        'url': TARGET_URL,
+        'render': 'html',
+        'stealth': True,
+        'wait': 15000,  # Wait 15 seconds for script execution
+        'render_script': '''
+            (function() {
+                function init() {
+                    if (!document.body) {
+                        setTimeout(init, 50);
+                        return;
+                    }
+                    
+                    var debugDiv = document.createElement('div');
+                    debugDiv.id = 'oxylabs-debug';
+                    debugDiv.style.cssText = 'position:fixed;top:0;left:0;width:100%;padding:20px;background:red;color:white;font-size:24px;z-index:99999;';
+                    debugDiv.innerHTML = 'OXYLABS DEBUG: Script attached.';
+                    document.body.appendChild(debugDiv);
 
-            .title {
-                background: #67B90E;
-                background: linear-gradient(to right, #67B90E 0%, #1E80CF 100%);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                font-weight: bold !important;
-                font-size: 32px !important;
-                -webkit-user-select: none; /* Safari */
-                -ms-user-select: none; /* IE 10 and IE 11 */
-                user-select: none; /* Standard syntax */
-            }
+                    var attempts = 0;
+                    var interval = setInterval(function() {
+                        attempts++;
+                        var tokenInput = document.querySelector('input[name="cf-turnstile-response"]');
+                        var token = tokenInput ? tokenInput.value : "NOT FOUND";
+                        debugDiv.innerHTML = 'OXYLABS DEBUG: Attempt ' + attempts + '. Token: ' + (token ? token.substring(0, 15) : 'EMPTY');
 
-            .content {
-                text-align: center;
-                margin-top: 3rem;
-                margin-right: 12rem;
-                margin-left: 12rem;
-            }
-
-            @media (max-width: 600px) {
-                .content {
-                    margin-right: 1rem;
-                    margin-left: 1rem;
+                        // If Cloudflare actually solves it
+                        if (token && token.length > 10) {
+                            debugDiv.innerHTML = 'OXYLABS DEBUG: Token found! Clicking...';
+                            clearInterval(interval);
+                            var btn = document.querySelector('#create-btn');
+                            if (btn) { btn.disabled = false; btn.click(); }
+                        }
+                        
+                        // Force click after 8 seconds (16 attempts)
+                        if (attempts === 16) {
+                            debugDiv.innerHTML = 'OXYLABS DEBUG: Force clicking button with empty token!';
+                            clearInterval(interval);
+                            var btn = document.querySelector('#create-btn');
+                            if (btn) { btn.disabled = false; btn.click(); }
+                        }
+                    }, 500);
                 }
-            }
-        </style>
+                init();
+            })();
+        '''
+    }
 
-        <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"></script>
-        <script>
-            turnstile.ready(function() {
-                turnstile.render("#freeiptv-turnstile", {
-                    sitekey: "0x4AAAAAAA_Qtby-wpbozX7J",
-                    callback: function(token) {
-                        document.querySelector("#create-btn").disabled = false;
-                        document.querySelector("#please-wait").style.display = "none";
-                    },
-                });
-            });
-        </script>
-    </head>
-  
-    <body>
-        <nav class="navbar bg-body-tertiary">
-            <div class="container-fluid">
-                <span class="navbar-brand mb-0 h1 title">freeiptv</span>
-            </div>
-        </nav>
+    try:
+        response = requests.post(
+            'https://realtime.oxylabs.io/v1/queries',
+            auth=(OXYLABS_USERNAME, OXYLABS_PASSWORD),
+            json=payload,
+            timeout=120
+        )
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print(f"Error communicating with Oxylabs: {e}")
+        sys.exit(1)
 
-        <div class="content">
-            <h3>Free IPTV with 30,000+ channels</h3>
+    data = response.json()
+    
+    try:
+        content = data['results'][0]['content']
+    except (KeyError, IndexError):
+        print("Unexpected Oxylabs response structure:")
+        print(data)
+        sys.exit(1)
 
-            
+    # Bulletproof regex: finds id="accUser" and captures the value inside the adjacent quotes.
+    user_match = re.search(r'id=["\']?accUser["\']?[^>]*value=["\']?([^"\'>\s]+)', content, re.IGNORECASE)
+    pass_match = re.search(r'id=["\']?accPass["\']?[^>]*value=["\']?([^"\'>\s]+)', content, re.IGNORECASE)
 
-            <h5 class="mt-4" id="please-wait">Please wait 5 seconds for the button to get unlocked...</h5>
+    # Fallback regex in case the value attribute comes BEFORE the id attribute in the HTML
+    if not user_match:
+        user_match = re.search(r'value=["\']?([^"\'>\s]+)[^>]*id=["\']?accUser["\']?', content, re.IGNORECASE)
+    if not pass_match:
+        pass_match = re.search(r'value=["\']?([^"\'>\s]+)[^>]*id=["\']?accPass["\']?', content, re.IGNORECASE)
 
-            <form method="POST" action="" class="mt-4">
-                <div id="freeiptv-turnstile"><div><input type="hidden" name="cf-turnstile-response" id="cf-chl-widget-xvh0z_response" value=""></div></div>
+    if user_match and pass_match:
+        username = user_match.group(1)
+        password = pass_match.group(1)
+        print(f"Successfully extracted credentials -> User: {username}, Pass: {password}")
+        return username, password
+    else:
+        print("Failed to find credentials in the scraped page content.")
+        
+        # Save the HTML to a file for the GitHub Action to upload as an artifact
+        with open('debug_output.html', 'w', encoding='utf-8') as f:
+            f.write(content)
+        print("Saved debug HTML to debug_output.html for artifact upload.")
+        
+        sys.exit(1)
 
-                <input id="create-btn" disabled="" type="submit" class="btn btn-primary btn-lg" style="height: 8rem;" value="Create free IPTV account !">
-            </form>
-        </div>
+def update_m3u_file(new_username, new_password):
+    print(f"Updating file: {FILE_PATH}")
+    
+    try:
+        with open(FILE_PATH, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except FileNotFoundError:
+        print(f"Error: {FILE_PATH} not found in the repository.")
+        sys.exit(1)
 
-        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
-    <script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v4513226cdae34746b4dedf0b4dfa099e1781791509496" integrity="sha512-ZE9pZaUXND66v380QUtch/5sE9tPFh2zg45pR2PB0CVkCtOREv2AJKkSidISWkysEuQ0EH8faUU5du78bx87UQ==" data-cf-beacon="{&quot;version&quot;:&quot;2024.11.0&quot;,&quot;token&quot;:&quot;815f97b2b9a34f8786208d343264dd8d&quot;,&quot;r&quot;:1}" crossorigin="anonymous"></script>
+    pattern = r'(http[s]?://freeiptv\.ottc\.xyz[^ ]*?/live/)\d+/(\d+)(/[^ \"\'\n]*)'
+    replacement = rf'\g<1>{new_username}/{new_password}\g<3>'
 
-</body></html>
+    new_content, count = re.subn(pattern, replacement, content)
+
+    if count == 0:
+        print("WARNING: No links containing 'freeiptv.ottc.xyz' with credentials were found to replace.")
+        if "freeiptv.ottc.xyz" in content:
+            print("The file contains 'freeiptv.ottc.xyz' but did not match the expected URL structure.")
+    else:
+        print(f"Successfully updated {count} links.")
+
+    with open(FILE_PATH, 'w', encoding='utf-8') as f:
+        f.write(new_content)
+        
+    print("File successfully saved.")
+
+if __name__ == "__main__":
+    if not OXYLABS_USERNAME or not OXYLABS_PASSWORD:
+        print("Error: OXYLABS_USERNAME and OXYLABS_PASSWORD environment variables must be set.")
+        sys.exit(1)
+        
+    user, pwd = get_credentials()
+    update_m3u_file(user, pwd)
