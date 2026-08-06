@@ -12,32 +12,55 @@ FILE_PATH = "languages/lit.m3u"
 def get_credentials():
     print("Fetching credentials via Oxylabs Web Scraper API...")
     
-    # Payload for Oxylabs. We use 'render': 'html' to execute JavaScript.
-    # The render_script waits for the button to be enabled, then uses fetch to 
-    # submit the form in the background and replace the HTML body with the result.
+    # Payload for Oxylabs.
+    # wait_for: Tells Oxylabs to wait until #accUser appears before capturing HTML.
+    # render_script: Injects a red debug banner to log the button's status, then clicks it.
     payload = {
         'source': 'universal',
         'url': TARGET_URL,
         'render': 'html',
-        'wait': 10000,  # Wait 10 seconds for the fetch to complete
+        'wait_for': '#accUser', 
         'render_script': '''
-            const interval = setInterval(() => {
-                const btn = document.querySelector('#create-btn');
-                if (btn && !btn.disabled) {
-                    const form = document.querySelector('form');
-                    if (form) {
-                        const formData = new FormData(form);
-                        fetch(window.location.href, {
-                            method: 'POST',
-                            body: formData
-                        }).then(res => res.text()).then(html => {
-                            // Replace the page HTML with the response containing credentials
-                            document.documentElement.innerHTML = html;
-                        }).catch(err => console.error(err));
+            document.addEventListener('DOMContentLoaded', function() {
+                // Create a visible debug banner
+                var debugDiv = document.createElement('div');
+                debugDiv.id = 'oxylabs-debug';
+                debugDiv.style.position = 'fixed';
+                debugDiv.style.top = '0';
+                debugDiv.style.left = '0';
+                debugDiv.style.width = '100%';
+                debugDiv.style.padding = '20px';
+                debugDiv.style.background = 'red';
+                debugDiv.style.color = 'white';
+                debugDiv.style.fontSize = '24px';
+                debugDiv.style.zIndex = '99999';
+                debugDiv.innerHTML = 'OXYLABS DEBUG: Script started. Waiting for button...';
+                document.body.appendChild(debugDiv);
+
+                var attempts = 0;
+                var interval = setInterval(function() {
+                    attempts++;
+                    var btn = document.querySelector('#create-btn');
+                    if (btn) {
+                        if (!btn.disabled) {
+                            debugDiv.innerHTML = 'OXYLABS DEBUG: Button enabled! Clicking... (Attempt ' + attempts + ')';
+                            btn.click();
+                            clearInterval(interval);
+                        } else {
+                            debugDiv.innerHTML = 'OXYLABS DEBUG: Button found but disabled. (Attempt ' + attempts + ')';
+                            // Fallback: force click after 15 seconds in case Turnstile callback fails
+                            if (attempts > 30) {
+                                debugDiv.innerHTML = 'OXYLABS DEBUG: Button still disabled after 15s. Forcing click!';
+                                btn.disabled = false;
+                                btn.click();
+                                clearInterval(interval);
+                            }
+                        }
+                    } else {
+                        debugDiv.innerHTML = 'OXYLABS DEBUG: Button not found. (Attempt ' + attempts + ')';
                     }
-                    clearInterval(interval);
-                }
-            }, 500);
+                }, 500);
+            });
         '''
     }
 
@@ -55,7 +78,6 @@ def get_credentials():
 
     data = response.json()
     
-    # Safely extract HTML content from Oxylabs response
     try:
         content = data['results'][0]['content']
     except (KeyError, IndexError):
@@ -63,7 +85,7 @@ def get_credentials():
         print(data)
         sys.exit(1)
 
-    # Search for the username and password pattern in the scraped HTML.
+    # Search for the username and password pattern
     user_match = re.search(r'id="accUser"[^>]*value="([^"]+)"', content)
     pass_match = re.search(r'id="accPass"[^>]*value="([^"]+)"', content)
 
@@ -74,10 +96,12 @@ def get_credentials():
         return username, password
     else:
         print("Failed to find credentials in the scraped page content.")
-        print("Printing HTML content for debugging purposes:\n")
-        print("------ START HTML CONTENT ------")
-        print(content)
-        print("------ END HTML CONTENT ------\n")
+        
+        # Save the HTML to a file for the GitHub Action to upload as an artifact
+        with open('debug_output.html', 'w', encoding='utf-8') as f:
+            f.write(content)
+        print("Saved debug HTML to debug_output.html for artifact upload.")
+        
         sys.exit(1)
 
 def update_m3u_file(new_username, new_password):
@@ -90,8 +114,6 @@ def update_m3u_file(new_username, new_password):
         print(f"Error: {FILE_PATH} not found in the repository.")
         sys.exit(1)
 
-    # This regex finds URLs containing freeiptv.ottc.xyz and replaces the old numbers
-    # Example: http://freeiptv.ottc.xyz:80/live/OLD_USER/OLD_PASS/47280.ts
     pattern = r'(http[s]?://freeiptv\.ottc\.xyz[^ ]*?/live/)\d+/(\d+)(/[^ \"\'\n]*)'
     replacement = rf'\g<1>{new_username}/{new_password}\g<3>'
 
@@ -104,7 +126,6 @@ def update_m3u_file(new_username, new_password):
     else:
         print(f"Successfully updated {count} links.")
 
-    # Write the updated content back to the file
     with open(FILE_PATH, 'w', encoding='utf-8') as f:
         f.write(new_content)
         
