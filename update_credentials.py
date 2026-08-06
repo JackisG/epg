@@ -16,14 +16,17 @@ def get_credentials():
         'source': 'universal',
         'url': TARGET_URL,
         'render': 'html',
-        'wait_for': '#accUser',  # Wait for the final redirected page to load
+        'stealth': True,  # <-- ADDED STEALTH MODE TO BYPASS CLOUDFLARE DETECTION
+        'wait_for': '#accUser',
         'timeout': 90000,
         'render_script': '''
             var debugDiv = document.createElement('div');
             debugDiv.id = 'oxylabs-debug';
             debugDiv.style.cssText = 'position:fixed;top:0;left:0;width:100%;padding:20px;background:red;color:white;font-size:24px;z-index:99999;';
-            debugDiv.innerHTML = 'OXYLABS DEBUG: Script attached. Waiting for token...';
+            debugDiv.innerHTML = 'OXYLABS DEBUG: Script attached.';
             document.body.appendChild(debugDiv);
+
+            var manualRenderTried = false;
 
             var interval = setInterval(function() {
                 var tokenInput = document.querySelector('input[name="cf-turnstile-response"]');
@@ -34,11 +37,28 @@ def get_credentials():
                     
                     var btn = document.querySelector('#create-btn');
                     if (btn) {
-                        btn.disabled = false; // Force enable
-                        btn.click();          // Natural form submit & redirect
+                        btn.disabled = false; 
+                        btn.click();          
                     }
                 } else {
                     debugDiv.innerHTML = 'OXYLABS DEBUG: Still waiting for token...';
+                    
+                    // Fallback: If Cloudflare loaded but didn't render, we force it to render
+                    if (!manualRenderTried && typeof turnstile !== 'undefined' && document.querySelector('#freeiptv-turnstile') && document.querySelector('#freeiptv-turnstile').innerHTML === '') {
+                        debugDiv.innerHTML = 'OXYLABS DEBUG: Turnstile empty. Forcing manual render...';
+                        try {
+                            turnstile.render("#freeiptv-turnstile", {
+                                sitekey: "0x4AAAAAAA_Qtby-wpbozX7J",
+                                callback: function(token) {
+                                    document.querySelector("#create-btn").disabled = false;
+                                }
+                            });
+                            manualRenderTried = true;
+                            debugDiv.innerHTML = 'OXYLABS DEBUG: Manual render called successfully.';
+                        } catch(e) {
+                            debugDiv.innerHTML = 'OXYLABS DEBUG: Manual render error: ' + e.message;
+                        }
+                    }
                 }
             }, 500);
         '''
