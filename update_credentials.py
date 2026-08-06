@@ -16,60 +16,24 @@ def get_credentials():
         'source': 'universal',
         'url': TARGET_URL,
         'render': 'html',
-        'wait_for': '#oxylabs-success',  # Wait for our custom marker
+        'wait_for': '#accUser',  # Wait for the username input to appear on the redirected page
         'timeout': 60000,
         'render_script': '''
-            function init() {
-                if (!document.body) {
-                    setTimeout(init, 100);
-                    return;
-                }
-                
-                var debugDiv = document.createElement('div');
-                debugDiv.id = 'oxylabs-debug';
-                debugDiv.style.cssText = 'position:fixed;top:0;left:0;width:100%;padding:20px;background:red;color:white;font-size:20px;z-index:99999;';
-                debugDiv.innerHTML = 'OXYLABS DEBUG: Script started.';
-                document.body.appendChild(debugDiv);
-
-                var attempts = 0;
-                var interval = setInterval(function() {
-                    attempts++;
-                    var btn = document.querySelector('#create-btn');
-                    
+            var attempts = 0;
+            var interval = setInterval(function() {
+                attempts++;
+                var btn = document.querySelector('#create-btn');
+                if (btn && !btn.disabled) {
+                    btn.click();
+                    clearInterval(interval);
+                } else if (attempts > 10) { // Force click after 5 seconds
                     if (btn) {
-                        if (!btn.disabled) {
-                            debugDiv.innerHTML = 'OXYLABS DEBUG: Button enabled! Submitting via fetch... (Attempt ' + attempts + ')';
-                            clearInterval(interval);
-                            
-                            var form = document.querySelector('form');
-                            var formData = new FormData(form);
-                            
-                            fetch(window.location.href, {
-                                method: 'POST',
-                                body: formData
-                            }).then(function(res) {
-                                debugDiv.innerHTML = 'OXYLABS DEBUG: Fetch responded with ' + res.status;
-                                return res.text();
-                            }).then(function(html) {
-                                debugDiv.innerHTML = 'OXYLABS DEBUG: Got HTML. Replacing DOM...';
-                                document.documentElement.innerHTML = html;
-                                var successDiv = document.createElement('div');
-                                successDiv.id = 'oxylabs-success';
-                                successDiv.style.display = 'none';
-                                successDiv.innerHTML = 'OXYLABS SUCCESS';
-                                document.body.appendChild(successDiv);
-                            }).catch(function(err) {
-                                debugDiv.innerHTML = 'OXYLABS DEBUG: Fetch Error! ' + err.message;
-                            });
-                        } else {
-                            debugDiv.innerHTML = 'OXYLABS DEBUG: Button found but disabled. (Attempt ' + attempts + ')';
-                        }
-                    } else {
-                        debugDiv.innerHTML = 'OXYLABS DEBUG: Button not found. (Attempt ' + attempts + ')';
+                        btn.disabled = false;
+                        btn.click();
+                        clearInterval(interval);
                     }
-                }, 500);
-            }
-            init();
+                }
+            }, 500);
         '''
     }
 
@@ -94,9 +58,17 @@ def get_credentials():
         print(data)
         sys.exit(1)
 
-    # Search for the username and password pattern
-    user_match = re.search(r'id="accUser"[^>]*value="([^"]+)"', content)
-    pass_match = re.search(r'id="accPass"[^>]*value="([^"]+)"', content)
+    # Search for the username and password pattern.
+    # This regex is much more flexible: it matches id="accUser" followed by value="..." 
+    # regardless of attribute order, spaces, or single/double quotes.
+    user_match = re.search(r'id=["\']accUser["\'][^>]*value=["\']([^"\']+)["\']', content)
+    pass_match = re.search(r'id=["\']accPass["\'][^>]*value=["\']([^"\']+)["\']', content)
+
+    # Fallback regex in case the value attribute comes BEFORE the id attribute
+    if not user_match:
+        user_match = re.search(r'value=["\']([^"\']+)["\'][^>]*id=["\']accUser["\']', content)
+    if not pass_match:
+        pass_match = re.search(r'value=["\']([^"\']+)["\'][^>]*id=["\']accPass["\']', content)
 
     if user_match and pass_match:
         username = user_match.group(1)
