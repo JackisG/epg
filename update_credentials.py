@@ -125,20 +125,43 @@ def update_m3u_file(new_user: str, new_pass: str) -> bool:
         log.error("File not found: %s", FILE_PATH)
         return False
 
-    # Replace /live/<user>/<pass>/ or /live/<user>/<pass> occurrences for any freeiptv host variant
+    # Match only hosts that include freeiptv and ot tc.xyz to avoid accidental matches
+    # Captures:
+    #  group 1: prefix up to /live/
+    #  group 2: old username segment
+    #  group 3: old password segment
+    #  group 4: suffix (rest of path, including leading slash) or empty
     pattern = re.compile(
-        r'(https?://[^/\s]*freeiptv[^/\s]*/live/)([^/]+)/([^/\s]+)(?=/|[\s"\']|$)',
+        r'(https?://[^/\s]*freeiptv[^/\s]*ottc\.xyz(?::\d+)?/live/)([^/]+)/([^/\s]+)(/[^ \n"\']*)?',
         flags=re.IGNORECASE,
     )
-    replacement = r'\1' + re.escape(new_user) + '/' + re.escape(new_pass)
-    new_txt, n = pattern.subn(replacement, txt)
-    if n == 0:
-        # More permissive: replace first two segments after /live/ ignoring host specifics
-        permissive = re.compile(r'(https?://[^/\s]*/live/)([^/]+)/([^/\s]+)(?=/|[\s"\']|$)', flags=re.IGNORECASE)
-        new_txt, n = permissive.subn(replacement, txt)
+
+    def repl(m):
+        prefix = m.group(1)
+        suffix = m.group(4) or ""
+        return f"{prefix}{new_user}/{new_pass}{suffix}"
+
+    new_txt, n = pattern.subn(repl, txt)
 
     if n == 0:
-        log.warning("No matching freeiptv links found to update.")
+        log.warning("No matching freeiptv links found to update (tried strict host pattern). Trying permissive host pattern...")
+
+        # Slightly more permissive but still require 'ottc.xyz' somewhere in host
+        permissive = re.compile(
+            r'(https?://[^/\s]*ottc\.xyz(?::\d+)?/live/)([^/]+)/([^/\s]+)(/[^ \n"\']*)?',
+            flags=re.IGNORECASE,
+        )
+
+        def repl2(m):
+            prefix = m.group(1)
+            suffix = m.group(4) or ""
+            return f"{prefix}{new_user}/{new_pass}{suffix}"
+
+        new_txt, n2 = permissive.subn(repl2, txt)
+        n = n2
+
+    if n == 0:
+        log.warning("No matching freeiptv links found to update after permissive attempt.")
         return False
 
     with open(FILE_PATH, "w", encoding="utf-8") as fh:
