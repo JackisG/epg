@@ -46,18 +46,18 @@ https://cdnlb.tvplayhome.lt/live/eds/PWR_LTU_Live/GO3_LIVE_HLS/PWR_LTU_Live.m3u8
 https://m-1.data.lt/m-1/smil:m-1.smil/playlist.m3u8
 #EXTINF:-1 tvg-id="2TV.lt@SD" tvg-logo="https://upload.wikimedia.org/wikipedia/lt/thumb/6/65/2TV_logo.svg/960px-2TV_logo.svg.png" ,2TV
 https://lnk5511.bstrm.net/live/687e3ff1679c8d4d68fab6c5/hd/manifest.mpd
-#EXTINF:-1 tvg-id="Go3Sport1.ee@SD" tvg-logo="https://i.imgur.com/0eZa0qh.png" http-user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36" group-title="Sports",Go3 Sport 1 (1080p)
-#EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36
-http://stream.mcquack.net/416/index.m3u8
 #EXTINF:-1 tvg-id="Sport1Baltic.ua@SD" tvg-logo="https://i.imgur.com/aBY7QK4.png" http-user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36" group-title="Sports",Sport 1 Baltic (1080p)
 #EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36
 http://stream.mcquack.net/461/index.m3u8
+#EXTINF:-1 tvg-id="Go3Sport1.ee@SD" tvg-logo="https://i.imgur.com/0eZa0qh.png" http-user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36" group-title="Sports",Go3 Sport 1 (1080p)
+#EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36
+http://stream.mcquack.net/416/index.m3u8
 
+#EXTINF:-1 tvg-id="Go3SportOpen.ee@SD" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/1/1f/Go3_Sport_Open_Logo_2023.svg/500px-Go3_Sport_Open_Logo_2023.svg.png" ,GO3 SPORT Open [720p]
+http://freeiptv.ottc.xyz:80/live/013478257198/465619082877/47282.ts
 #EXTINF:-1 tvg-id="BalticumAuksinis.lt@HD" tvg-logo="https://www.balticum.lt/file/manual/Televizija/Balticum%20logotipai%20AUKSINIS-01.png" ,BALTICUM AUKSINIS [1080p]
 http://freeiptv.ottc.xyz:80/live/013478257198/465619082877/47287.ts
 #EXTINF:-1 tvg-id="BalticumPlatinum.lt@HD" tvg-logo="https://tv-gidas.lt/media/tv-kanalu-logo/balticum-platinum-logo.png" ,BALTICUM PLATINUM [1080p]
 http://freeiptv.ottc.xyz:80/live/013478257198/465619082877/47288.ts
-#EXTINF:-1 tvg-id="Go3SportOpen.ee@SD" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/1/1f/Go3_Sport_Open_Logo_2023.svg/500px-Go3_Sport_Open_Logo_2023.svg.png" ,GO3 SPORT Open [720p]
-http://freeiptv.ottc.xyz:80/live/013478257198/465619082877/47282.ts
 #EXTINF:-1 tvg-id="TV3Plus.lv@SD" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/8/8b/TV3_Plus_Logo_2021.svg/960px-TV3_Plus_Logo_2021.svg.png" ,TV3 PLUS [1080p]
 http://freeiptv.ottc.xyz:80/live/013478257198/465619082877/47280.ts
