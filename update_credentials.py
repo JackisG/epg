@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-update_credentials.py (safer)
+update_credentials.py (XHR-aware)
 
-- Uses Oxylabs Realtime Web Scraper API to render the page and run a render_script that
-  clicks the "Create free IPTV account" button and injects a machine-readable element.
-- Extracts credentials only from safe sources (injected JSON, DOM IDs, or ottc.xyz/live/ pattern).
-- Strict validation: both user and pass MUST be digit-only strings with length >= MIN_DIGITS.
-- If safe credentials are not found, the script aborts WITHOUT modifying the M3U file.
-- Saves debug_output.html for diagnostics and logs progress to stdout.
+- Uses Oxylabs Realtime Web Scraper API to render the page, click the create button,
+  intercept fetch/XHR responses, and extract accUser/accPass from DOM or from XHR bodies
+  that include /live/<digits>/<digits>.
+- Injects a hidden pre with JSON so the returned HTML reliably contains any extracted info.
+- Strict validation: both must be digits and length >= MIN_DIGITS.
+- If no safe credentials are found, abort without modifying the M3U.
+- Saves debug_output.html for troubleshooting.
 """
 
 import os
@@ -31,11 +32,56 @@ OX_ENDPOINT = "https://realtime.oxylabs.io/v1/queries"
 # Minimum digits required for username/password to be considered valid
 MIN_DIGITS = 10
 
-# Render script executed inside the remote browser by Oxylabs
+# Enhanced render script: intercepts fetch/XHR and collects responses,
+# clicks the create button, waits longer (120s) and injects pre#oxylabs-extracted JSON.
 RENDER_SCRIPT = r'''
 (async function() {
   function wait(ms){return new Promise(r=>setTimeout(r,ms));}
+
+  // Collect XHR/fetch responses
+  try {
+    window.__oxylabs_xhr_data = [];
+    (function() {
+      const origFetch = window.fetch;
+      window.fetch = async function(...args) {
+        try {
+          const resp = await origFetch.apply(this, args);
+          try {
+            const clone = resp.clone();
+            clone.text().then(text => {
+              try { window.__oxylabs_xhr_data.push({url: resp.url, body: text}); } catch(e){}
+            }).catch(()=>{});
+          } catch(e){}
+          return resp;
+        } catch(e) {
+          throw e;
+        }
+      };
+
+      // Wrap XMLHttpRequest
+      const OrigXHR = window.XMLHttpRequest;
+      function wrapXHR() {
+        const realOpen = OrigXHR.prototype.open;
+        const realSend = OrigXHR.prototype.send;
+        OrigXHR.prototype.open = function(method, url, ...rest) {
+          this._ox_url = url;
+          return realOpen.call(this, method, url, ...rest);
+        };
+        OrigXHR.prototype.send = function(body) {
+          this.addEventListener('load', function() {
+            try {
+              window.__oxylabs_xhr_data.push({url: this._ox_url || '', body: this.responseText});
+            } catch(e) {}
+          });
+          return realSend.call(this, body);
+        };
+      }
+      try { wrapXHR(); } catch(e) {}
+    })();
+  } catch(e) {}
+
   function textIncludesCreateIPTV(s){ s = (s||'').toLowerCase(); return s.includes('create') && s.includes('iptv'); }
+
   async function findButton(timeoutMs=30000){
     const start = Date.now();
     while (Date.now() - start < timeoutMs){
@@ -45,38 +91,65 @@ RENDER_SCRIPT = r'''
     }
     return null;
   }
-  try{
+
+  try {
     const btn = await findButton(30000);
-    if (btn){
-      // wait until enabled (max 20s)
+    if (btn) {
       const startEnable = Date.now();
-      while (Date.now() - startEnable < 20000){
+      while (Date.now() - startEnable < 20000) {
         try { if (!btn.disabled && !btn.getAttribute('disabled')) break; } catch(e){}
         await wait(500);
       }
-      try { btn.click(); } catch(e){
-        try { btn.dispatchEvent(new MouseEvent('click', { bubbles: true })); } catch(e){}
-      }
+      try { btn.click(); } catch(e) { try { btn.dispatchEvent(new MouseEvent('click', { bubbles: true })); } catch(e){} }
     }
-    // Wait up to 60s for values to appear (longer to allow turnstile)
-    let accUser=null, accPass=null;
+
+    // After click, wait up to 120s for DOM or XHR to produce creds
+    let accUser = null, accPass = null;
     const startWait = Date.now();
-    while (Date.now() - startWait < 60000){
-      const uEl = document.getElementById('accUser');
-      const pEl = document.getElementById('accPass');
-      accUser = uEl ? (uEl.value || uEl.textContent || '').toString().trim() : null;
-      accPass = pEl ? (pEl.value || pEl.textContent || '').toString().trim() : null;
-      if (accUser || accPass) break;
+    while (Date.now() - startWait < 120000) {
+      try {
+        const uEl = document.getElementById('accUser');
+        const pEl = document.getElementById('accPass');
+        accUser = uEl ? (uEl.value || uEl.textContent || '').toString().trim() : null;
+        accPass = pEl ? (pEl.value || pEl.textContent || '').toString().trim() : null;
+        if (accUser && accPass) break;
+
+        // Check XHR bodies for /live/<digits>/<digits>
+        if (window.__oxylabs_xhr_data && window.__oxylabs_xhr_data.length) {
+          for (let i = 0; i < window.__oxylabs_xhr_data.length; i++) {
+            let body = window.__oxylabs_xhr_data[i].body || '';
+            try {
+              // If JSON, stringify it to search
+              if (typeof body !== 'string' && body !== null) body = JSON.stringify(body);
+            } catch(e){}
+            const m = body.match(/\/live\/(\d{6,})\/(\d{6,})/);
+            if (m) {
+              accUser = m[1];
+              accPass = m[2];
+              break;
+            }
+          }
+          if (accUser && accPass) break;
+        }
+      } catch(e){}
       await wait(500);
     }
-    // Inject a hidden pre element with machine-readable JSON so returned HTML contains creds
+
+    // Inject a machine-readable pre element so returned HTML contains results
     const pre = document.createElement('pre');
     pre.id = 'oxylabs-extracted';
     pre.style.display = 'none';
-    pre.textContent = JSON.stringify({ accUser: accUser || null, accPass: accPass || null, url: location.href });
+    try {
+      let snippet = window.__oxylabs_xhr_data ? window.__oxylabs_xhr_data.slice(-5) : [];
+      // Trim large bodies
+      snippet = snippet.map(s => ({url: s.url, body: (typeof s.body === 'string' && s.body.length > 2000) ? s.body.slice(0,2000) + '...[truncated]' : s.body}));
+      pre.textContent = JSON.stringify({ accUser: accUser || null, accPass: accPass || null, url: location.href, xhr_snippet: snippet });
+    } catch(e) {
+      pre.textContent = JSON.stringify({ accUser: accUser || null, accPass: accPass || null, url: location.href, error: String(e) });
+    }
     document.body.appendChild(pre);
-  } catch(e){
-    try { const pre = document.createElement('pre'); pre.id='oxylabs-extracted'; pre.style.display='none'; pre.textContent = JSON.stringify({error: String(e), url: location.href}); document.body.appendChild(pre); } catch(_) {}
+  } catch(e) {
+    try { const pre = document.createElement('pre'); pre.id = 'oxylabs-extracted'; pre.style.display='none'; pre.textContent = JSON.stringify({ error: String(e), url: location.href }); document.body.appendChild(pre); } catch(_) {}
   }
 })();
 '''
@@ -124,7 +197,7 @@ def extract_from_injected_pre(html: str) -> Tuple[Optional[str], Optional[str]]:
                 data = json.loads(pre.get_text())
                 u = data.get("accUser")
                 p = data.get("accPass")
-                log.debug("Injected pre content: %s", json.dumps(data)[:200])
+                log.debug("Injected pre content: %s", json.dumps(data)[:400])
                 return u, p
             except Exception:
                 log.debug("Failed parsing injected pre JSON", exc_info=True)
@@ -166,7 +239,7 @@ def extract_from_links(html: str) -> Tuple[Optional[str], Optional[str]]:
     return None, None
 
 
-def call_oxylabs_realtime(retries: int = 3, timeout: int = 180) -> Optional[str]:
+def call_oxylabs_realtime(retries: int = 3, timeout: int = 240) -> Optional[str]:
     """
     Call Oxylabs Realtime Web Scraper API with the render script, return rendered HTML content.
     """
@@ -179,7 +252,7 @@ def call_oxylabs_realtime(retries: int = 3, timeout: int = 180) -> Optional[str]
         "url": TARGET_URL,
         "render": "html",
         "stealth": True,
-        "wait": 60000,  # milliseconds for renderer to wait
+        "wait": 120000,  # milliseconds for renderer to wait (120s)
         "render_script": RENDER_SCRIPT,
     }
 
@@ -201,7 +274,7 @@ def call_oxylabs_realtime(retries: int = 3, timeout: int = 180) -> Optional[str]
         except requests.RequestException:
             log.exception("Oxylabs request error on attempt %d", attempt)
             if attempt < retries:
-                time.sleep(3)
+                time.sleep(5)
     return None
 
 
@@ -238,7 +311,7 @@ def update_m3u_file(new_user: str, new_pass: str) -> bool:
 
 def main():
     try:
-        html = call_oxylabs_realtime(retries=3, timeout=180)
+        html = call_oxylabs_realtime(retries=3, timeout=240)
         if not html:
             log.error("Oxylabs rendering failed; check credentials and logs.")
             sys.exit(1)
