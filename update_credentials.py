@@ -6,6 +6,7 @@ update_credentials.py
   and updates languages/lit.m3u with the new credentials.
 
 - Saves debug_output.html and prints verbose logs for diagnostics.
+- Extraction tightened to avoid accidental matches like 'bootstrap@5.3.3'.
 """
 
 import os
@@ -38,12 +39,25 @@ def save_debug_html(content: str, note: str = None) -> None:
         log.exception("Failed to save debug HTML")
 
 
+def looks_like_credentials(u: str, p: str) -> bool:
+    """
+    Heuristic: valid credentials are numeric sequences (observed on site),
+    with reasonable length. Return True only for digit-only strings length >= 6.
+    """
+    if not u or not p:
+        return False
+    if re.fullmatch(r"\d{6,}", u) and re.fullmatch(r"\d{6,}", p):
+        return True
+    return False
+
+
 def extract_from_html_fallback(html: str):
     """
     Try several ways to extract credentials from HTML:
     1) direct elements with id="accUser" and id="accPass"
     2) input[name=...] fallback
-    3) regex search for common patterns, /live/<user>/<pass>/, or user:pass in URLs
+    3) /live/<digits>/<digits>/ occurrences (in links or text)
+    4) scan anchor hrefs for freeiptv/ottc hosts with /live/<digits>/<digits>/
     Returns (user, pass) or (None, None)
     """
     soup = BeautifulSoup(html, "lxml")
@@ -55,9 +69,12 @@ def extract_from_html_fallback(html: str):
         if ue and pe:
             u = (ue.get("value") or ue.get_text(strip=True) or "").strip()
             p = (pe.get("value") or pe.get_text(strip=True) or "").strip()
-            if u and p:
-                log.info("Extracted credentials from #accUser/#accPass")
+            log.debug("ID lookup produced: %r / %r", u[:50], p[:50])
+            if looks_like_credentials(u, p):
+                log.info("Extracted numeric credentials from #accUser/#accPass")
                 return u, p
+            else:
+                log.info("Found #accUser/#accPass but they don't look like numeric credentials: %r / %r", u, p)
     except Exception:
         log.debug("ID extraction failed", exc_info=True)
 
@@ -68,47 +85,40 @@ def extract_from_html_fallback(html: str):
         if ue and pe:
             u = (ue.get("value") or "").strip()
             p = (pe.get("value") or "").strip()
-            if u and p:
-                log.info("Extracted credentials from input[name=...]")
+            log.debug("Named input lookup produced: %r / %r", u[:50], p[:50])
+            if looks_like_credentials(u, p):
+                log.info("Extracted numeric credentials from input[name=...]")
                 return u, p
+            else:
+                log.info("Found input[name=...] but they don't look numeric: %r / %r", u, p)
     except Exception:
         log.debug("Named input extraction failed", exc_info=True)
 
-    # 3) Regex fallbacks
-    patterns = [
-        r'//[^/]+/live/([^/]+)/([^/]+)',         # /live/<user>/<pass> style
-        r'id=["\']?accUser["\']?[^>]*value=["\']?([^"\'>\s]+)',  # attribute forms
-        r'id=["\']?accPass["\']?[^>]*value=["\']?([^"\'>\s]+)',
-        r'value=["\']?([^"\'>\s]+)[^>]*id=["\']?accUser["\']?',
-        r'value=["\']?([^"\'>\s]+)[^>]*id=["\']?accPass["\']?',
-        r'([A-Za-z0-9._%+-]+)[:@]([A-Za-z0-9._%+-]{4,})'  # generic user:pass or user@pass-like
-    ]
-    for p in patterns:
-        m = re.search(p, html, re.IGNORECASE | re.DOTALL)
-        if m:
-            if m.lastindex and m.lastindex >= 2:
-                u = m.group(1).strip()
-                v = m.group(2).strip()
-                log.info("Extracted credentials via regex pattern: %s", p)
-                return u, v
-            else:
-                # single capture: try to find a nearby password
-                u = m.group(1).strip()
-                rest = html[m.end(): m.end() + 500]
-                m2 = re.search(r'(["\']|:|\s)([A-Za-z0-9._%+-]{4,})', rest)
-                if m2:
-                    return u, m2.group(2).strip()
+    # 3) Look for /live/<digits>/<digits> in the rendered HTML
+    m = re.search(r'/live/(\d{6,})/(\d{6,})', html)
+    if m:
+        u = m.group(1)
+        p = m.group(2)
+        log.info("Found /live/<digits>/<digits> in HTML: %s / %s", u, p)
+        if looks_like_credentials(u, p):
+            return u, p
 
-    # 4) Links with user:pass@host
+    # 4) Scan links (anchor hrefs) for freeiptv/ottc host with /live/<digits>/<digits>
     try:
         for a in soup.find_all("a", href=True):
             href = a["href"]
-            m = re.search(r'//([^:]+):([^@]+)@', href)
-            if m:
-                return m.group(1), m.group(2)
+            if "ottc.xyz" in href and "/live/" in href:
+                m = re.search(r'/live/(\d{6,})/(\d{6,})', href)
+                if m:
+                    u = m.group(1)
+                    p = m.group(2)
+                    log.info("Found credentials in href %s -> %s / %s", href[:150], u, p)
+                    if looks_like_credentials(u, p):
+                        return u, p
     except Exception:
         log.debug("Link scanning failed", exc_info=True)
 
+    # If nothing valid found, return None
     return None, None
 
 
@@ -125,14 +135,9 @@ def update_m3u_file(new_user: str, new_pass: str) -> bool:
         log.error("File not found: %s", FILE_PATH)
         return False
 
-    # Match only hosts that include freeiptv and ot tc.xyz to avoid accidental matches
-    # Captures:
-    #  group 1: prefix up to /live/
-    #  group 2: old username segment
-    #  group 3: old password segment
-    #  group 4: suffix (rest of path, including leading slash) or empty
+    # Strict pattern: require 'ottc.xyz' in host to avoid matching unrelated CDN links
     pattern = re.compile(
-        r'(https?://[^/\s]*freeiptv[^/\s]*ottc\.xyz(?::\d+)?/live/)([^/]+)/([^/\s]+)(/[^ \n"\']*)?',
+        r'(https?://[^/\s]*ottc\.xyz(?::\d+)?/live/)([^/]+)/([^/\s]+)(/[^ \n"\']*)?',
         flags=re.IGNORECASE,
     )
 
@@ -144,24 +149,7 @@ def update_m3u_file(new_user: str, new_pass: str) -> bool:
     new_txt, n = pattern.subn(repl, txt)
 
     if n == 0:
-        log.warning("No matching freeiptv links found to update (tried strict host pattern). Trying permissive host pattern...")
-
-        # Slightly more permissive but still require 'ottc.xyz' somewhere in host
-        permissive = re.compile(
-            r'(https?://[^/\s]*ottc\.xyz(?::\d+)?/live/)([^/]+)/([^/\s]+)(/[^ \n"\']*)?',
-            flags=re.IGNORECASE,
-        )
-
-        def repl2(m):
-            prefix = m.group(1)
-            suffix = m.group(4) or ""
-            return f"{prefix}{new_user}/{new_pass}{suffix}"
-
-        new_txt, n2 = permissive.subn(repl2, txt)
-        n = n2
-
-    if n == 0:
-        log.warning("No matching freeiptv links found to update after permissive attempt.")
+        log.warning("No matching ottc.xyz/live links found to update.")
         return False
 
     with open(FILE_PATH, "w", encoding="utf-8") as fh:
@@ -273,17 +261,21 @@ def fetch_credentials_with_playwright(url: str, max_wait_seconds: int = 180):
                     if u_val and p_val:
                         u_val = u_val.strip()
                         p_val = p_val.strip()
-                        log.info("Credentials found in DOM; user=%s pass=%s", u_val[:6] + "...", p_val[:6] + "...")
-                        html = page.content()
-                        save_debug_html(html, note="success: credentials found in DOM")
-                        return u_val, p_val
+                        log.info("Credentials found in DOM; raw user=%r pass=%r", u_val[:50], p_val[:50])
+                        if looks_like_credentials(u_val, p_val):
+                            html = page.content()
+                            save_debug_html(html, note="success: credentials found in DOM")
+                            return u_val, p_val
+                        else:
+                            log.warning("DOM credentials found but do not look numeric: %r / %r", u_val, p_val)
+                            # continue waiting in case proper credentials appear later
 
-                    # Fallback: scan rendered HTML for known patterns
+                    # Fallback: scan rendered HTML for known /live/<digits>/<digits> patterns
                     html = page.content()
                     u2, p2 = extract_from_html_fallback(html)
                     if u2 and p2:
+                        log.info("Credentials found via fallback regex: %s / %s", u2, p2)
                         save_debug_html(html, note="success: credentials found via regex fallback on rendered HTML")
-                        log.info("Credentials found via fallback regex")
                         return u2, p2
 
                 except Exception:
@@ -358,6 +350,12 @@ def main():
         user, pwd = get_credentials()
         if not user or not pwd:
             log.error("Could not obtain credentials. Check debug_output.html artifact.")
+            sys.exit(1)
+
+        # Final validation before updating: ensure values look numeric
+        if not looks_like_credentials(user, pwd):
+            log.error("Extracted credentials do not look like expected numeric credentials: %r / %r", user, pwd)
+            save_debug_html(open(DEBUG_HTML, "r", encoding="utf-8").read() if os.path.exists(DEBUG_HTML) else "", note="invalid-extracted-credentials")
             sys.exit(1)
 
         ok = update_m3u_file(user, pwd)
