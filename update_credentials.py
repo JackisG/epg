@@ -1,17 +1,11 @@
 """
-credentials.py
+update_credentials.py
 
-Playwright-based scraper to obtain free IPTV account credentials from:
-  https://freeiptv2023-d.ottc.xyz/index.php
+- Uses Playwright to open the target page, click "Create free IPTV account",
+  wait for Cloudflare/Turnstile to finish and the account fields to populate,
+  and updates languages/lit.m3u with the new credentials.
 
-Behavior:
-- Opens the page with Playwright (headless), navigates to /index.php.
-- Attempts to click the "Create free IPTV account" control (many selector fallbacks).
-- Waits for elements with id="accUser" and id="accPass" to be present and populated.
-- Saves debug_output.html for diagnostics in all code paths where HTML is available.
-- Replaces credentials in languages/lit.m3u for matching freeiptv URLs.
-- Contains fallbacks: regex extraction from rendered HTML and optional Oxylabs API fallback
-  (if OXYLABS_USERNAME and OXYLABS_PASSWORD are supplied in env).
+- Saves debug_output.html and prints verbose logs for diagnostics.
 """
 
 import os
@@ -19,8 +13,6 @@ import re
 import sys
 import time
 import logging
-from typing import Tuple, Optional
-
 from bs4 import BeautifulSoup
 
 TARGET_URL = "https://freeiptv2023-d.ottc.xyz"
@@ -29,139 +21,144 @@ DEBUG_HTML = "debug_output.html"
 
 # Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-log = logging.getLogger("credentials")
+log = logging.getLogger("update_credentials")
 
 OXYLABS_USERNAME = os.environ.get("OXYLABS_USERNAME")
 OXYLABS_PASSWORD = os.environ.get("OXYLABS_PASSWORD")
 
 
-def save_debug_html(html: str, note: Optional[str] = None) -> None:
+def save_debug_html(content: str, note: str = None) -> None:
     try:
         with open(DEBUG_HTML, "w", encoding="utf-8") as fh:
             if note:
                 fh.write("<!-- NOTE: " + note.replace("--", "") + " -->\n")
-            fh.write(html)
+            fh.write(content)
         log.info("Saved debug HTML to %s", DEBUG_HTML)
     except Exception:
-        log.exception("Failed saving debug HTML")
+        log.exception("Failed to save debug HTML")
 
 
-def extract_credentials_from_html(html: str) -> Tuple[Optional[str], Optional[str]]:
+def extract_from_html_fallback(html: str):
     """
-    Attempt multiple extraction strategies from HTML:
-    1) Direct id lookup (#accUser / #accPass)
-    2) Input[name=...] lookup
-    3) Regex patterns (inline /live/<user>/<pass>/, user:pass, id/value attributes)
+    Try several ways to extract credentials from HTML:
+    1) direct elements with id="accUser" and id="accPass"
+    2) input[name=...] fallback
+    3) regex search for common patterns, /live/<user>/<pass>/, or user:pass in URLs
+    Returns (user, pass) or (None, None)
     """
-    try:
-        soup = BeautifulSoup(html, "lxml")
-    except Exception:
-        soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(html, "lxml")
 
-    # 1) Direct id lookup
+    # 1) By id
     try:
-        user_el = soup.find(id="accUser")
-        pass_el = soup.find(id="accPass")
-        if user_el and pass_el:
-            u = user_el.get("value") or user_el.get_text(strip=True)
-            p = pass_el.get("value") or pass_el.get_text(strip=True)
+        ue = soup.find(id="accUser")
+        pe = soup.find(id="accPass")
+        if ue and pe:
+            u = (ue.get("value") or ue.get_text(strip=True) or "").strip()
+            p = (pe.get("value") or pe.get_text(strip=True) or "").strip()
             if u and p:
-                return u.strip(), p.strip()
+                log.info("Extracted credentials from #accUser/#accPass")
+                return u, p
     except Exception:
-        log.debug("Direct id lookup failed", exc_info=True)
+        log.debug("ID extraction failed", exc_info=True)
 
-    # 2) input[name=...] fallback
+    # 2) input[name=...] variants
     try:
-        user_el = soup.find("input", attrs={"name": "accUser"}) or soup.find("input", attrs={"name": "user"})
-        pass_el = soup.find("input", attrs={"name": "accPass"}) or soup.find("input", attrs={"name": "pass"})
-        if user_el and pass_el:
-            u = user_el.get("value") or ""
-            p = pass_el.get("value") or ""
+        ue = soup.find("input", attrs={"name": "accUser"}) or soup.find("input", attrs={"name": "user"})
+        pe = soup.find("input", attrs={"name": "accPass"}) or soup.find("input", attrs={"name": "pass"})
+        if ue and pe:
+            u = (ue.get("value") or "").strip()
+            p = (pe.get("value") or "").strip()
             if u and p:
-                return u.strip(), p.strip()
+                log.info("Extracted credentials from input[name=...]")
+                return u, p
     except Exception:
-        log.debug("Named input lookup failed", exc_info=True)
+        log.debug("Named input extraction failed", exc_info=True)
 
-    # 3) Regex-based searches
+    # 3) Regex fallbacks
     patterns = [
-        # /live/<user>/<pass>
-        r'//[^/]+/live/([^/]+)/([^/]+)',
-        # id="accUser" value="..."
-        r'id=["\']?accUser["\']?[^>]*value=["\']?([^"\'>\s]+)',
+        r'//[^/]+/live/([^/]+)/([^/]+)',         # /live/<user>/<pass> style
+        r'id=["\']?accUser["\']?[^>]*value=["\']?([^"\'>\s]+)',  # attribute forms
         r'id=["\']?accPass["\']?[^>]*value=["\']?([^"\'>\s]+)',
-        # generic user:pass or user | pass labels
-        r'([A-Za-z0-9._%+-]{4,})[:\s]+([A-Za-z0-9._%+-]{4,})'
+        r'value=["\']?([^"\'>\s]+)[^>]*id=["\']?accUser["\']?',
+        r'value=["\']?([^"\'>\s]+)[^>]*id=["\']?accPass["\']?',
+        r'([A-Za-z0-9._%+-]+)[:@]([A-Za-z0-9._%+-]{4,})'  # generic user:pass or user@pass-like
     ]
-    for pat in patterns:
-        m = re.search(pat, html, re.IGNORECASE | re.DOTALL)
+    for p in patterns:
+        m = re.search(p, html, re.IGNORECASE | re.DOTALL)
         if m:
             if m.lastindex and m.lastindex >= 2:
                 u = m.group(1).strip()
-                p = m.group(2).strip()
-                # discard obviously wrong captures
-                if len(u) >= 3 and len(p) >= 3:
-                    return u, p
+                v = m.group(2).strip()
+                log.info("Extracted credentials via regex pattern: %s", p)
+                return u, v
+            else:
+                # single capture: try to find a nearby password
+                u = m.group(1).strip()
+                rest = html[m.end(): m.end() + 500]
+                m2 = re.search(r'(["\']|:|\s)([A-Za-z0-9._%+-]{4,})', rest)
+                if m2:
+                    return u, m2.group(2).strip()
+
+    # 4) Links with user:pass@host
+    try:
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            m = re.search(r'//([^:]+):([^@]+)@', href)
+            if m:
+                return m.group(1), m.group(2)
+    except Exception:
+        log.debug("Link scanning failed", exc_info=True)
 
     return None, None
 
 
 def update_m3u_file(new_user: str, new_pass: str) -> bool:
     """
-    Replace credentials in languages/lit.m3u for freeiptv links.
-    Replaces the two path segments immediately after /live/ with new_user/new_pass when possible.
+    Replace credentials inside languages/lit.m3u for freeiptv-style URLs.
+    Returns True if file updated.
     """
-    log.info("Updating file %s", FILE_PATH)
+    log.info("Updating %s with new credentials", FILE_PATH)
     try:
         with open(FILE_PATH, "r", encoding="utf-8") as fh:
-            content = fh.read()
+            txt = fh.read()
     except FileNotFoundError:
-        log.error("M3U file not found: %s", FILE_PATH)
+        log.error("File not found: %s", FILE_PATH)
         return False
 
-    # Strict pattern: host variants + /live/<user>/<pass> + optional suffix
-    strict = re.compile(
-        r'(https?://(?:www\.)?freeiptv(?:\d*-d)?\.ottc\.xyz(?::\d+)?/live/)([^/]+)/([^/]+)(?=/|[\s"\']|$)',
+    # Replace /live/<user>/<pass>/ or /live/<user>/<pass> occurrences for any freeiptv host variant
+    pattern = re.compile(
+        r'(https?://[^/\s]*freeiptv[^/\s]*/live/)([^/]+)/([^/\s]+)(?=/|[\s"\']|$)',
         flags=re.IGNORECASE,
     )
+    replacement = r'\1' + re.escape(new_user) + '/' + re.escape(new_pass)
+    new_txt, n = pattern.subn(replacement, txt)
+    if n == 0:
+        # More permissive: replace first two segments after /live/ ignoring host specifics
+        permissive = re.compile(r'(https?://[^/\s]*/live/)([^/]+)/([^/\s]+)(?=/|[\s"\']|$)', flags=re.IGNORECASE)
+        new_txt, n = permissive.subn(replacement, txt)
 
-    def repl_strict(m):
-        prefix = m.group(1)
-        suffix = ""
-        return f"{prefix}{new_user}/{new_pass}{suffix}"
-
-    new_content, count = strict.subn(repl_strict, content)
-    if count == 0:
-        # Permissive replacement: replace the first two path segments after /live/ if present
-        permissive = re.compile(r'(https?://[^/]*freeiptv[^/]*/live/)([^/\s"\']+)(/[^ \n"\']*)?', flags=re.IGNORECASE)
-
-        def repl_perm(m):
-            prefix = m.group(1)
-            tail = m.group(3) or ""
-            return f"{prefix}{new_user}/{new_pass}{tail}"
-
-        new_content, count = permissive.subn(repl_perm, content)
-
-    if count == 0:
-        log.warning("No links updated (no matching freeiptv links found).")
+    if n == 0:
+        log.warning("No matching freeiptv links found to update.")
         return False
 
     with open(FILE_PATH, "w", encoding="utf-8") as fh:
-        fh.write(new_content)
-    log.info("Updated %d link(s) in %s", count, FILE_PATH)
+        fh.write(new_txt)
+    log.info("Updated %d links in %s", n, FILE_PATH)
     return True
 
 
-def fetch_with_playwright(url: str, max_wait_seconds: int = 180) -> Tuple[Optional[str], Optional[str]]:
+def fetch_credentials_with_playwright(url: str, max_wait_seconds: int = 180):
     """
-    Use Playwright to open the page, click Create button and wait for accUser/accPass to populate.
+    Use Playwright to render the page, click the create button and wait for accUser/accPass.
     Returns (user, pass) or (None, None).
     """
     try:
         from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
     except Exception:
-        log.exception("Playwright import failed")
+        log.exception("Playwright not available (is it installed?)")
         return None, None
 
+    log.info("Starting Playwright for %s", url)
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
@@ -175,13 +172,13 @@ def fetch_with_playwright(url: str, max_wait_seconds: int = 180) -> Tuple[Option
             try:
                 page.goto(target, wait_until="networkidle", timeout=120000)
             except PWTimeoutError:
-                log.warning("page.goto timed out after 120s, capturing partial content and continuing.")
+                log.warning("page.goto timed out after 120s; saving partial HTML and continuing to interact")
                 try:
                     save_debug_html(page.content(), note="partial after goto timeout")
                 except Exception:
-                    log.debug("Could not capture partial page content", exc_info=True)
+                    log.debug("Could not save partial HTML after goto timeout", exc_info=True)
 
-            # Try multiple selectors to find the create control
+            # selectors for the create control - exact text + alternatives
             create_selectors = [
                 "text=Create free IPTV account",
                 "text=Create Free IPTV Account",
@@ -189,14 +186,14 @@ def fetch_with_playwright(url: str, max_wait_seconds: int = 180) -> Tuple[Option
                 "#create-btn",
                 "button:has-text(\"Create free IPTV account\")",
                 "a:has-text(\"Create free IPTV account\")",
-                "button:has-text(\"Create Free IPTV Account\")",
             ]
+
             clicked = False
             for sel in create_selectors:
                 try:
                     locator = page.locator(sel)
                     if locator.count() > 0:
-                        log.info("Clicking create control using selector: %s", sel)
+                        log.info("Found create control with selector: %s", sel)
                         try:
                             locator.first.scroll_into_view_if_needed(timeout=3000)
                         except Exception:
@@ -204,48 +201,46 @@ def fetch_with_playwright(url: str, max_wait_seconds: int = 180) -> Tuple[Option
                         try:
                             locator.first.click(timeout=8000)
                             clicked = True
+                            log.info("Clicked create control via selector %s", sel)
                             break
-                        except Exception:
-                            log.debug("Click failed for %s", sel, exc_info=True)
+                        except Exception as e:
+                            log.debug("Click attempt failed for %s: %s", sel, e)
                 except Exception:
-                    continue
+                    log.debug("Error checking selector %s", sel, exc_info=True)
 
             if not clicked:
-                # JS fallback: single-line string
+                # fallback JS click using a single-line JS string to avoid Python string delimiting issues
                 try:
                     js = "const btn = Array.from(document.querySelectorAll('button,a')).find(el => /create\\s+free\\s*iptv/i.test(el.textContent)); if (btn) { btn.scrollIntoView(); btn.click(); return true; } return false;"
-                    res = page.evaluate(js)
-                    log.info("JS click attempted, result=%s", res)
+                    js_clicked = page.evaluate(js)
+                    log.info("Attempted JS click, result: %s", js_clicked)
                 except Exception:
                     log.debug("JS click attempt failed", exc_info=True)
 
-            # Poll for accUser / accPass or fallback extraction
+            # After clicking (or not), wait for the account fields to appear and contain values
             deadline = time.time() + max_wait_seconds
             while time.time() < deadline:
                 try:
-                    # Check DOM inputs
-                    try:
-                        user_present = page.locator("#accUser").count() > 0
-                        pass_present = page.locator("#accPass").count() > 0
-                    except Exception:
-                        user_present = False
-                        pass_present = False
+                    # Prefer to read values directly from DOM
+                    user_exists = page.locator("#accUser").count() > 0
+                    pass_exists = page.locator("#accPass").count() > 0
 
                     u_val = None
                     p_val = None
-                    if user_present:
+                    if user_exists:
                         try:
-                            u_el = page.locator("#accUser").first
-                            u_val = u_el.get_attribute("value") or (u_el.input_value() if hasattr(u_el, "input_value") else None) or u_el.inner_text()
+                            ue = page.locator("#accUser").first
+                            # Try multiple retrieval methods
+                            u_val = ue.get_attribute("value") or (ue.input_value() if hasattr(ue, "input_value") else None) or ue.inner_text() or None
                         except Exception:
                             try:
                                 u_val = page.eval_on_selector("#accUser", "el => el.value || el.innerText || ''")
                             except Exception:
                                 u_val = None
-                    if pass_present:
+                    if pass_exists:
                         try:
-                            p_el = page.locator("#accPass").first
-                            p_val = p_el.get_attribute("value") or (p_el.input_value() if hasattr(p_el, "input_value") else None) or p_el.inner_text()
+                            pe = page.locator("#accPass").first
+                            p_val = pe.get_attribute("value") or (pe.input_value() if hasattr(pe, "input_value") else None) or pe.inner_text() or None
                         except Exception:
                             try:
                                 p_val = page.eval_on_selector("#accPass", "el => el.value || el.innerText || ''")
@@ -255,29 +250,32 @@ def fetch_with_playwright(url: str, max_wait_seconds: int = 180) -> Tuple[Option
                     if u_val and p_val:
                         u_val = u_val.strip()
                         p_val = p_val.strip()
+                        log.info("Credentials found in DOM; user=%s pass=%s", u_val[:6] + "...", p_val[:6] + "...")
                         html = page.content()
-                        save_debug_html(html, note="success: accUser/accPass found in DOM")
+                        save_debug_html(html, note="success: credentials found in DOM")
                         return u_val, p_val
 
-                    # Fallback: inspect rendered html
+                    # Fallback: scan rendered HTML for known patterns
                     html = page.content()
-                    u2, p2 = extract_credentials_from_html(html)
+                    u2, p2 = extract_from_html_fallback(html)
                     if u2 and p2:
-                        save_debug_html(html, note="found via regex on rendered HTML")
+                        save_debug_html(html, note="success: credentials found via regex fallback on rendered HTML")
+                        log.info("Credentials found via fallback regex")
                         return u2, p2
 
                 except Exception:
-                    log.debug("Polling loop exception", exc_info=True)
+                    log.debug("Exception while waiting loop; will retry", exc_info=True)
 
                 time.sleep(2)
 
-            # timeout
+            # timed out waiting for credentials
             try:
                 html = page.content()
-                save_debug_html(html, note="timeout waiting for credentials")
+                save_debug_html(html, note="timeout: credentials not found within wait period")
             except Exception:
-                log.debug("Could not capture page content on timeout", exc_info=True)
-            log.error("Timed out waiting for credentials")
+                log.debug("Could not read content when timing out", exc_info=True)
+
+            log.error("Timed out waiting for credentials after %s seconds", max_wait_seconds)
             return None, None
 
     except Exception:
@@ -285,91 +283,70 @@ def fetch_with_playwright(url: str, max_wait_seconds: int = 180) -> Tuple[Option
         return None, None
 
 
-def fetch_with_oxylabs(url: str) -> Tuple[Optional[str], Optional[str]]:
-    """
-    Optional Oxylabs realtime API fallback (requires OXYLABS_USERNAME & OXYLABS_PASSWORD).
-    Will render HTML server-side and return results for parsing.
-    """
-    if not OXYLABS_USERNAME or not OXYLABS_PASSWORD:
-        log.info("Oxylabs credentials not present; skipping Oxylabs fallback.")
-        return None, None
+def get_credentials():
+    # Try Playwright (local rendering) first — best chance to pass Turnstile if it can be solved
+    u, p = fetch_credentials_with_playwright(TARGET_URL, max_wait_seconds=180)
+    if u and p:
+        return u, p
 
-    import requests
-
-    payload = {
-        "source": "universal",
-        "url": url,
-        "render": "html",
-        "stealth": True,
-        "wait": 15000,
-    }
-    try:
-        resp = requests.post("https://realtime.oxylabs.io/v1/queries", auth=(OXYLABS_USERNAME, OXYLABS_PASSWORD), json=payload, timeout=120)
-        resp.raise_for_status()
-        data = resp.json()
-        content = None
+    # Optional Oxylabs fallback (if you have credentials and want to use their rendering service)
+    if OXYLABS_USERNAME and OXYLABS_PASSWORD:
+        log.info("Attempting Oxylabs realtime API fallback")
         try:
-            content = data["results"][0]["content"]
-        except Exception:
+            import requests
+            payload = {"source": "universal", "url": TARGET_URL, "render": "html", "stealth": True, "wait": 15000}
+            resp = requests.post("https://realtime.oxylabs.io/v1/queries", auth=(OXYLABS_USERNAME, OXYLABS_PASSWORD), json=payload, timeout=120)
+            resp.raise_for_status()
+            data = resp.json()
             content = None
-        if content:
-            save_debug_html(content, note="oxylabs_fallback_content")
-            u, p = extract_credentials_from_html(content)
-            if u and p:
-                return u, p
-    except Exception:
-        log.exception("Oxylabs request failed")
-    return None, None
+            try:
+                content = data["results"][0]["content"]
+            except Exception:
+                content = None
+            if content:
+                save_debug_html(content, note="oxylabs fallback content")
+                u2, p2 = extract_from_html_fallback(content)
+                if u2 and p2:
+                    return u2, p2
+                else:
+                    log.error("Oxylabs returned content but credentials not found")
+        except Exception:
+            log.exception("Oxylabs fallback failed")
 
-
-def get_credentials() -> Tuple[Optional[str], Optional[str]]:
-    # Primary: Playwright render
-    u, p = fetch_with_playwright(TARGET_URL, max_wait_seconds=180)
-    if u and p:
-        return u, p
-
-    # Fallback 1: Oxylabs
-    u, p = fetch_with_oxylabs(TARGET_URL)
-    if u and p:
-        return u, p
-
-    # Fallback 2: direct requests.get (no JS)
+    # Final direct GET fallback (may be blocked by Cloudflare)
     try:
         import requests
-
-        log.info("Final direct GET fallback to %s", TARGET_URL)
+        log.info("Final fallback: plain GET")
         r = requests.get(TARGET_URL, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
         if r.status_code == 200 and r.text:
-            save_debug_html(r.text, note="direct_get_fallback")
-            u, p = extract_credentials_from_html(r.text)
-            if u and p:
-                return u, p
+            save_debug_html(r.text, note="final-get fallback")
+            u3, p3 = extract_from_html_fallback(r.text)
+            if u3 and p3:
+                return u3, p3
     except Exception:
         log.debug("Direct GET fallback failed", exc_info=True)
 
+    log.error("All extraction attempts failed")
     return None, None
 
 
 def main():
     try:
-        creds = get_credentials()
-        if not creds or not creds[0] or not creds[1]:
-            log.error("Failed to obtain credentials. See %s artifact for debug HTML.", DEBUG_HTML)
+        user, pwd = get_credentials()
+        if not user or not pwd:
+            log.error("Could not obtain credentials. Check debug_output.html artifact.")
             sys.exit(1)
-
-        user, pwd = creds
-        log.info("Obtained credentials (masked): %s / %s", (user[:4] + "..."), (pwd[:4] + "..."))
 
         ok = update_m3u_file(user, pwd)
         if not ok:
-            log.error("Failed to update m3u file with new credentials.")
+            log.error("Failed to update m3u file.")
             sys.exit(1)
 
-        log.info("Successfully updated %s", FILE_PATH)
+        log.info("Success: file updated. (user masked in logs)")
         sys.exit(0)
 
     except Exception:
-        log.exception("Unhandled exception in main")
+        log.exception("Unhandled error")
         sys.exit(1)
 
 
