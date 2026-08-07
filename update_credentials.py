@@ -6,7 +6,7 @@ update_credentials.py
   and updates languages/lit.m3u with the new credentials.
 
 - Saves debug_output.html and prints verbose logs for diagnostics.
-- Extraction tightened to avoid accidental matches like 'bootstrap@5.3.3'.
+- Additional XHR & rendered-HTML scanning to capture credentials inserted in non-standard ways.
 """
 
 import os
@@ -54,10 +54,11 @@ def looks_like_credentials(u: str, p: str) -> bool:
 def extract_from_html_fallback(html: str):
     """
     Try several ways to extract credentials from HTML:
-    1) direct elements with id="accUser" and id="accPass"
-    2) input[name=...] fallback
-    3) /live/<digits>/<digits>/ occurrences (in links or text)
-    4) scan anchor hrefs for freeiptv/ottc hosts with /live/<digits>/<digits>/
+      1) direct elements with id="accUser" and id="accPass"
+      2) input[name=...] fallback
+      3) look for /live/<digits>/<digits> occurrences
+      4) scan for long digit sequences anywhere in the page (first two)
+      5) scan anchor hrefs for ottc.xyz/live/<digits>/<digits>
     Returns (user, pass) or (None, None)
     """
     soup = BeautifulSoup(html, "lxml")
@@ -74,7 +75,7 @@ def extract_from_html_fallback(html: str):
                 log.info("Extracted numeric credentials from #accUser/#accPass")
                 return u, p
             else:
-                log.info("Found #accUser/#accPass but they don't look like numeric credentials: %r / %r", u, p)
+                log.info("Found #accUser/#accPass but they don't look like numeric credentials")
     except Exception:
         log.debug("ID extraction failed", exc_info=True)
 
@@ -90,7 +91,7 @@ def extract_from_html_fallback(html: str):
                 log.info("Extracted numeric credentials from input[name=...]")
                 return u, p
             else:
-                log.info("Found input[name=...] but they don't look numeric: %r / %r", u, p)
+                log.info("Found input[name=...] but they don't look numeric")
     except Exception:
         log.debug("Named input extraction failed", exc_info=True)
 
@@ -103,7 +104,15 @@ def extract_from_html_fallback(html: str):
         if looks_like_credentials(u, p):
             return u, p
 
-    # 4) Scan links (anchor hrefs) for freeiptv/ottc host with /live/<digits>/<digits>
+    # 4) Find any long digit sequences on the page, return first two
+    nums = re.findall(r'\d{6,}', html)
+    if len(nums) >= 2:
+        u, p = nums[0], nums[1]
+        log.info("Found long digit sequences in HTML, picking first two: %s / %s", u, p)
+        if looks_like_credentials(u, p):
+            return u, p
+
+    # 5) Scan links for ottc.xyz/live/<digits>/<digits>
     try:
         for a in soup.find_all("a", href=True):
             href = a["href"]
@@ -118,7 +127,6 @@ def extract_from_html_fallback(html: str):
     except Exception:
         log.debug("Link scanning failed", exc_info=True)
 
-    # If nothing valid found, return None
     return None, None
 
 
@@ -210,9 +218,10 @@ def fetch_credentials_with_playwright(url: str, max_wait_seconds: int = 180):
                         except Exception:
                             pass
                         try:
-                            locator.first.click(timeout=8000)
+                            # force click to ensure the action runs even if element is disabled/overlapped
+                            locator.first.click(timeout=10000, force=True)
                             clicked = True
-                            log.info("Clicked create control via selector %s", sel)
+                            log.info("Clicked create control via selector %s (force=True)", sel)
                             break
                         except Exception as e:
                             log.debug("Click attempt failed for %s: %s", sel, e)
@@ -228,11 +237,33 @@ def fetch_credentials_with_playwright(url: str, max_wait_seconds: int = 180):
                 except Exception:
                     log.debug("JS click attempt failed", exc_info=True)
 
-            # After clicking (or not), wait for the account fields to appear and contain values
+            # Also listen for XHR responses that may include credentials in their body/JSON
+            xhr_candidates = []
+
+            def on_response(resp):
+                try:
+                    u = resp.url
+                    if "live" in u or "create" in u or "account" in u or "generate" in u:
+                        try:
+                            txt = resp.text()
+                            if txt and re.search(r'\d{6,}', txt):
+                                x = txt[:1000]
+                                log.info("Captured XHR candidate response from %s", resp.url)
+                                xhr_candidates.append((resp.url, txt))
+                                # Save the candidate body for debugging
+                                save_debug_html(txt, note=f"xhr-candidate from {resp.url}")
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            page.on("response", on_response)
+
+            # After clicking (or JS click), wait for account info: prefer DOM inputs, else scan HTML, else XHR results
             deadline = time.time() + max_wait_seconds
             while time.time() < deadline:
                 try:
-                    # Prefer to read values directly from DOM
+                    # 1) DOM inputs
                     user_exists = page.locator("#accUser").count() > 0
                     pass_exists = page.locator("#accPass").count() > 0
 
@@ -241,7 +272,6 @@ def fetch_credentials_with_playwright(url: str, max_wait_seconds: int = 180):
                     if user_exists:
                         try:
                             ue = page.locator("#accUser").first
-                            # Try multiple retrieval methods
                             u_val = ue.get_attribute("value") or (ue.input_value() if hasattr(ue, "input_value") else None) or ue.inner_text() or None
                         except Exception:
                             try:
@@ -267,19 +297,28 @@ def fetch_credentials_with_playwright(url: str, max_wait_seconds: int = 180):
                             save_debug_html(html, note="success: credentials found in DOM")
                             return u_val, p_val
                         else:
-                            log.warning("DOM credentials found but do not look numeric: %r / %r", u_val, p_val)
-                            # continue waiting in case proper credentials appear later
+                            log.warning("DOM credentials do not match numeric pattern; continuing to wait")
 
-                    # Fallback: scan rendered HTML for known /live/<digits>/<digits> patterns
+                    # 2) Check XHR candidate responses captured
+                    for (url, body) in xhr_candidates:
+                        u2, p2 = extract_from_html_fallback(body)
+                        if u2 and p2:
+                            log.info("Extracted credentials from XHR response %s: %s / %s", url, u2, p2)
+                            save_debug_html(body, note=f"credentials-from-xhr:{url}")
+                            if looks_like_credentials(u2, p2):
+                                return u2, p2
+
+                    # 3) Scan rendered page content for long digit sequences
                     html = page.content()
-                    u2, p2 = extract_from_html_fallback(html)
-                    if u2 and p2:
-                        log.info("Credentials found via fallback regex: %s / %s", u2, p2)
-                        save_debug_html(html, note="success: credentials found via regex fallback on rendered HTML")
-                        return u2, p2
+                    u3, p3 = extract_from_html_fallback(html)
+                    if u3 and p3:
+                        log.info("Extracted credentials via fallback on rendered HTML: %s / %s", u3, p3)
+                        save_debug_html(html, note="credentials-from-rendered-html")
+                        if looks_like_credentials(u3, p3):
+                            return u3, p3
 
                 except Exception:
-                    log.debug("Exception while waiting loop; will retry", exc_info=True)
+                    log.debug("Exception inside wait loop; will retry", exc_info=True)
 
                 time.sleep(2)
 
@@ -355,7 +394,10 @@ def main():
         # Final validation before updating: ensure values look numeric
         if not looks_like_credentials(user, pwd):
             log.error("Extracted credentials do not look like expected numeric credentials: %r / %r", user, pwd)
-            save_debug_html(open(DEBUG_HTML, "r", encoding="utf-8").read() if os.path.exists(DEBUG_HTML) else "", note="invalid-extracted-credentials")
+            try:
+                save_debug_html(open(DEBUG_HTML, "r", encoding="utf-8").read() if os.path.exists(DEBUG_HTML) else "", note="invalid-extracted-credentials")
+            except Exception:
+                pass
             sys.exit(1)
 
         ok = update_m3u_file(user, pwd)
